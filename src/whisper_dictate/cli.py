@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -20,14 +18,9 @@ from whisper_dictate.recorder import (
 
 
 def _notify(msg: str) -> None:
-    """Best-effort desktop notification."""
-    if shutil.which("notify-send"):
-        subprocess.run(
-            ["notify-send", "-t", "1500", "whisper-dictate", msg],
-            check=False,
-        )
-    else:
-        print(msg, file=sys.stderr)
+    """Best-effort cross-platform desktop notification (Linux/macOS/Windows)."""
+    from whisper_dictate.notify import notify
+    notify(msg)
 
 
 def _transcribe(args: argparse.Namespace, wav: Path) -> str:
@@ -134,6 +127,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_init(args: argparse.Namespace) -> int:
+    """Check all prerequisites for this OS and set up what can be done without root."""
+    from whisper_dictate.init import run_init
+    return run_init(model=args.model, with_server=not args.no_server, assume_yes=args.yes)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="whisper-dictate", description=__doc__)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -180,6 +179,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp_serve = sub.add_parser("serve", help="Run the warm-model daemon (keeps the model in memory for instant transcription)")
     add_model_opts(sp_serve)
     sp_serve.set_defaults(func=cmd_serve)
+
+    sp_init = sub.add_parser("init", help="Check prerequisites and set up daemons for this OS (painless install)")
+    sp_init.add_argument("--model", default="large-v3",
+                         help="Model the warm-model daemon should preload. Default: large-v3")
+    sp_init.add_argument("--no-server", action="store_true",
+                         help="Don't install the warm-model daemon service")
+    sp_init.add_argument("--yes", action="store_true",
+                         help="Run system-package installs automatically (uses sudo)")
+    sp_init.set_defaults(func=cmd_init)
 
     return p
 

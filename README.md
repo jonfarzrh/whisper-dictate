@@ -4,7 +4,9 @@ Local Whisper-powered dictation that types into any application. Cross-platform 
 
 ## Installation
 
-Every platform needs [uv](https://docs.astral.sh/uv/) and Python ≥ 3.11. Follow the section for your platform — each ends with verifying setup and binding a hotkey. For NVIDIA GPU acceleration, see [GPU acceleration](#gpu-acceleration).
+Every platform needs [uv](https://docs.astral.sh/uv/) and Python ≥ 3.11. For NVIDIA GPU acceleration, see [GPU acceleration](#gpu-acceleration).
+
+**The painless path:** install the tool, then run `whisper-dictate init`. It checks every prerequisite for your OS, sets up the background services it can without root (the ydotool daemon and the warm-model autoloader), and prints the exact commands for anything that needs `sudo` (or runs them with `--yes`). Re-run it any time — it's idempotent. The per-platform sections below cover the one-time system packages `init` can't install for you.
 
 ### Linux — Wayland (Pop!_OS COSMIC, GNOME 4x, KDE Plasma 6)
 
@@ -17,23 +19,13 @@ Every platform needs [uv](https://docs.astral.sh/uv/) and Python ≥ 3.11. Follo
 
        uv tool install whisper-dictate
 
-3. **Set up the ydotool daemon** so synthetic typing reaches native Wayland windows. Use the helper script from this repo:
+3. **Run init** — it installs the `ydotoold` and warm-model systemd user services, checks `/dev/uinput` access, and verifies everything:
 
-       ./setup-ydotool.sh
+       whisper-dictate init       # expect it to finish with "All set ✓"
 
-   It installs a `ydotoold` systemd user service, sets `YDOTOOL_SOCKET`, and reports whether you need to join the `input` group. (On Pop!_OS a uinput udev ACL usually grants access already — no relogin needed. Check with `getfacl /dev/uinput`.)
+   (Prefer scripts? `./setup-ydotool.sh` and `./setup-server.sh` do the daemon pieces individually.)
 
-   > **ydotool 0.1.8 socket quirk:** that version's daemon ignores `--socket-path` and always listens on `/tmp/.ydotool_socket`, so clients must use `export YDOTOOL_SOCKET="/tmp/.ydotool_socket"`. The script handles this for you.
-
-4. **(Recommended) Keep the model warm** so each press is ~0.3s instead of ~3s:
-
-       ./setup-server.sh          # systemd user service running `whisper-dictate serve`
-
-5. **Verify and bind a hotkey:**
-
-       whisper-dictate check      # expect: OK (ydotool on wayland)
-
-   COSMIC: **Settings → Keyboard → Custom Shortcuts**, command `whisper-dictate` (use the full path from `which whisper-dictate` if COSMIC can't resolve it), bound to e.g. `Super+Space`. If transcripts come out empty/garbled, your mic gain is likely too low — raise it: `pactl set-source-volume @DEFAULT_SOURCE@ 100%`.
+4. **Bind a hotkey.** COSMIC: **Settings → Keyboard → Custom Shortcuts**, command `whisper-dictate` (use the full path from `which whisper-dictate` if COSMIC can't resolve it), bound to e.g. `Super+Space`. If transcripts come out empty/garbled, your mic gain is likely too low — raise it: `pactl set-source-volume @DEFAULT_SOURCE@ 100%`.
 
 ### Linux — X11 (Xorg GNOME, i3, XFCE, …)
 
@@ -41,27 +33,29 @@ Same as Wayland but with **xdotool** (no daemon or socket needed):
 
     sudo apt install libportaudio2 xdotool
     uv tool install whisper-dictate            # add the GPU --with flags if applicable
-    whisper-dictate check                      # expect: OK (xdotool on x11)
+    whisper-dictate init                       # sets up the warm-model daemon, verifies setup
 
-Optionally run `./setup-server.sh` for the warm-model daemon, then bind `whisper-dictate` to a hotkey in your DE/WM.
+Then bind `whisper-dictate` to a hotkey in your DE/WM.
 
 ### macOS
 
 PortAudio ships *inside* the `sounddevice` wheel, so there's no Homebrew step.
 
     uv tool install 'whisper-dictate[macos]'   # the [macos] extra pulls in pynput for typing
+    whisper-dictate init                       # installs a launchd agent for the warm-model daemon, verifies setup
 
-On first use, grant **Accessibility** permission to whatever launches the CLI (Terminal, iTerm, Raycast…) under **System Settings → Privacy & Security → Accessibility**. Transcription runs on CPU — start with `--model small` if `large-v3` feels slow.
+On first use, grant **Accessibility** permission to whatever launches the CLI (Terminal, iTerm, Raycast…) under **System Settings → Privacy & Security → Accessibility** (`init` reminds you). Transcription runs on CPU — start with `--model small` if `large-v3` feels slow. Status notifications use the built-in `osascript`, so nothing extra to install.
 
-Bind a hotkey with Raycast, Hammerspoon, or Shortcuts.app. To keep the model warm, run `whisper-dictate serve` (e.g. as a `launchd` agent).
+Bind a hotkey with Raycast, Hammerspoon, or Shortcuts.app.
 
 ### Windows
 
 PortAudio ships inside the `sounddevice` wheel.
 
     uv tool install 'whisper-dictate[windows]' # the [windows] extra pulls in pynput for typing
+    whisper-dictate init                        # registers a logon task for the warm-model daemon, verifies setup
 
-For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-acceleration). Bind a hotkey with PowerToys, AutoHotkey, or a `.lnk` shortcut; run `whisper-dictate serve` in the background to keep the model warm.
+For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-acceleration). Bind a hotkey with PowerToys, AutoHotkey, or a `.lnk` shortcut. Status notifications use a built-in PowerShell toast, so nothing extra to install. (The warm-model daemon needs Unix-domain sockets — available on Windows 10 1803+; otherwise transcription falls back to loading the model per call.)
 
 ### From a local wheel (any platform)
 
@@ -70,6 +64,7 @@ For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-accelerat
 
 ## Usage
 
+    whisper-dictate init         # check prerequisites & set up daemons for your OS
     whisper-dictate              # toggle: start, then stop+type
     whisper-dictate start        # explicit start
     whisper-dictate stop         # explicit stop+transcribe+type

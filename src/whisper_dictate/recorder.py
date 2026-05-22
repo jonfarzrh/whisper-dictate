@@ -35,6 +35,13 @@ def audio_file() -> Path:
     return _state_dir() / "recording.wav"
 
 
+def stop_file() -> Path:
+    """Sentinel the worker polls to know when to stop. This is the cross-platform
+    stop mechanism: on Windows os.kill(SIGTERM) is a hard TerminateProcess that
+    would skip the worker's flush, so we can't rely on signals there."""
+    return _state_dir() / "recorder.stop"
+
+
 def is_recording() -> bool:
     pf = pid_file()
     if not pf.exists():
@@ -62,13 +69,20 @@ def start_recording() -> int:
     """Spawn a detached worker that records until signaled. Returns PID."""
     af = audio_file()
     af.unlink(missing_ok=True)
+    stop_file().unlink(missing_ok=True)  # clear any stale stop sentinel
+
+    # Detach the worker so it outlives this short-lived CLI invocation.
+    if sys.platform == "win32":
+        detach = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+    else:
+        detach = {"start_new_session": True}
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "whisper_dictate", "--record-worker", str(af)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **detach,
     )
     pid_file().write_text(str(proc.pid))
     return proc.pid
@@ -85,10 +99,14 @@ def stop_recording() -> Path | None:
         pf.unlink(missing_ok=True)
         return None
 
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    # Ask the worker to stop. The sentinel file is the portable signal (the
+    # worker polls it); on POSIX we also send SIGTERM for a faster response.
+    stop_file().write_text("1")
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
     af = audio_file()
     for _ in range(50):  # up to 5s
@@ -97,6 +115,7 @@ def stop_recording() -> Path | None:
         time.sleep(0.1)
 
     pf.unlink(missing_ok=True)
+    stop_file().unlink(missing_ok=True)
     return af if af.exists() else None
 
 
@@ -116,7 +135,11 @@ def _pid_alive(pid: int) -> bool:
 
 
 def run_record_worker(out_path: Path) -> None:
-    """Worker entry: record audio until SIGTERM, write WAV, exit."""
+    """Worker entry: record audio until told to stop, write WAV, exit.
+
+    Stops on either the stop sentinel file (portable, polled) or SIGTERM/SIGINT
+    (POSIX fast path). The file is what makes this work on Windows, where
+    SIGTERM can't be delivered to a handler."""
     import numpy as np
     import sounddevice as sd
     import soundfile as sf
@@ -134,13 +157,14 @@ def run_record_worker(out_path: Path) -> None:
     def callback(indata, frames, time_info, status):
         chunks.append(indata.copy())
 
+    sp = stop_file()
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
         dtype="float32",
         callback=callback,
     ):
-        while not stop_flag["stop"]:
+        while not stop_flag["stop"] and not sp.exists():
             sd.sleep(50)
 
     if chunks:

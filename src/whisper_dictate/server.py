@@ -35,6 +35,9 @@ def transcribe_via_server(
     """Transcribe via the warm daemon. Returns the text (possibly "") on success,
     or None if the daemon is unreachable / errored — signalling the caller to fall
     back to in-process transcription."""
+    if not hasattr(socket, "AF_UNIX"):
+        return None  # no Unix sockets here (older Windows) -> caller falls back
+
     sp = socket_path()
     if not sp.exists():
         return None
@@ -78,6 +81,13 @@ def run_server(
     killed. Models are cached by (model, device, compute_type) so a request for a
     different model loads it on demand without dropping the warm default."""
     from whisper_dictate.transcriber import load_model, transcribe_with
+
+    if not hasattr(socket, "AF_UNIX"):
+        raise RuntimeError(
+            "The warm-model daemon needs Unix-domain sockets, which this Python "
+            "build doesn't expose (older Windows). Dictation still works without "
+            "it — transcription just loads the model per call."
+        )
 
     cache: dict[tuple[str, str, str], object] = {}
 
