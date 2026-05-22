@@ -133,6 +133,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     return run_init(model=args.model, with_server=not args.no_server, assume_yes=args.yes)
 
 
+def cmd_deinit(args: argparse.Namespace) -> int:
+    """Tear down the services and runtime state that `init` created."""
+    from whisper_dictate.init import run_deinit
+    return run_deinit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="whisper-dictate", description=__doc__)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -188,6 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp_init.add_argument("--yes", action="store_true",
                          help="Run system-package installs automatically (uses sudo)")
     sp_init.set_defaults(func=cmd_init)
+
+    sp_deinit = sub.add_parser("deinit", help="Remove the services and state that `init` created")
+    sp_deinit.set_defaults(func=cmd_deinit)
 
     return p
 

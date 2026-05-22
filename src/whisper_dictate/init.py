@@ -94,6 +94,16 @@ def _install_user_service(name: str, description: str, exec_start: str) -> None:
     _systemctl_user("enable", "--now", name)
 
 
+def _remove_user_service(name: str) -> bool:
+    """Stop, disable, and delete a systemd --user unit. Returns True if it existed."""
+    unit = _user_unit_dir() / name
+    existed = unit.exists()
+    _systemctl_user("disable", "--now", name)
+    unit.unlink(missing_ok=True)
+    _systemctl_user("daemon-reload")
+    return existed
+
+
 # --------------------------------------------------------------------------- #
 # Linux
 # --------------------------------------------------------------------------- #
@@ -293,6 +303,74 @@ def _init_windows(model: str, with_server: bool) -> int:
 
 
 # --------------------------------------------------------------------------- #
+
+def run_deinit() -> int:
+    """Entry point for `whisper-dictate deinit`: tear down everything `init` created
+    on this OS (user-level services + runtime state). Leaves system packages and
+    the tool install alone — those are the user's to remove."""
+    print("whisper-dictate deinit\n")
+    if sys.platform.startswith("linux"):
+        _deinit_linux()
+    elif sys.platform == "darwin":
+        _deinit_macos()
+    elif sys.platform == "win32":
+        _deinit_windows()
+    else:
+        print(f"Unsupported platform: {sys.platform}")
+
+    _clean_state()
+
+    print("\nRemoved the warm-model service and runtime state.")
+    print("Left in place (remove yourself if you want):")
+    print("  - the tool itself:        uv tool uninstall whisper-dictate")
+    print("  - downloaded models:      rm -rf ~/.cache/huggingface/hub/models--Systran--*")
+    print("  - system packages (libportaudio2, ydotool, …): via your package manager")
+    return 0
+
+
+def _deinit_linux() -> None:
+    for svc in ("whisper-dictate-server.service", "ydotoold.service"):
+        if _remove_user_service(svc):
+            _say(FIX, f"removed and stopped {svc}")
+        else:
+            _say(OK, f"{svc} was not installed")
+
+
+def _deinit_macos() -> None:
+    plist = Path.home() / "Library" / "LaunchAgents" / "ai.whisperdictate.server.plist"
+    if plist.exists():
+        subprocess.run(["launchctl", "unload", str(plist)], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        plist.unlink(missing_ok=True)
+        _say(FIX, "removed and unloaded the warm-model launchd agent")
+    else:
+        _say(OK, "warm-model launchd agent was not installed")
+
+
+def _deinit_windows() -> None:
+    rc = subprocess.run(
+        'schtasks /Delete /TN "whisper-dictate-server" /F',
+        shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode
+    if rc == 0:
+        _say(FIX, "removed the warm-model logon task")
+    else:
+        _say(OK, "warm-model logon task was not present")
+
+
+def _clean_state() -> None:
+    """Remove leftover runtime files (pid, stop sentinel, recording, socket)."""
+    from whisper_dictate import recorder
+    from whisper_dictate.server import socket_path
+
+    for f in (recorder.pid_file(), recorder.stop_file(), recorder.audio_file(), socket_path()):
+        if f.exists():
+            try:
+                f.unlink()
+                _say(FIX, f"removed runtime file {f.name}")
+            except OSError:
+                pass
+
 
 def _finish(todo: list[str]) -> int:
     print("\nVerification:")

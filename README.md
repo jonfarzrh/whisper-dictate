@@ -65,6 +65,7 @@ For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-accelerat
 ## Usage
 
     whisper-dictate init         # check prerequisites & set up daemons for your OS
+    whisper-dictate deinit       # remove the services & state that `init` created
     whisper-dictate              # toggle: start, then stop+type
     whisper-dictate start        # explicit start
     whisper-dictate stop         # explicit stop+transcribe+type
