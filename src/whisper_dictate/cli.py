@@ -21,6 +21,23 @@ def _notify(msg: str) -> None:
     notify(msg)
 
 
+def _is_configured() -> bool:
+    """True once settings have been saved. `init` guarantees this file exists, so
+    its absence means setup hasn't run — the signal for first-run behavior."""
+    from whisper_dictate.config import config_file
+    return config_file().exists()
+
+
+def _open_settings_gui() -> int:
+    """Open the settings window (blocking), preferring Qt and falling back to the
+    Tkinter UI if PySide6 is missing."""
+    if _has_pyside6():
+        from whisper_dictate.qtgui import run_settings
+    else:
+        from whisper_dictate.gui import run_settings
+    return run_settings()
+
+
 def _effective_language(args: argparse.Namespace) -> str | None:
     """Whisper language for this run. Translating implies an arbitrary spoken
     language, so we let Whisper auto-detect the source rather than forcing the
@@ -113,6 +130,11 @@ def _transcribe_type_cleanup(args: argparse.Namespace, wav: Path) -> int:
 
 def cmd_toggle(args: argparse.Namespace) -> int:
     """Start recording if idle; stop + transcribe + type if recording."""
+    if not _is_configured():
+        # A hotkey press is headless, so guide the user via a notification rather
+        # than silently recording before the typing backend/daemon are set up.
+        _notify("whisper-dictate isn't set up yet — run: whisper-dictate init")
+        return 1
     if is_recording():
         _notify("⏳ Transcribing...")
         wav = stop_recording()
@@ -175,7 +197,25 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    """Check all prerequisites for this OS and set up what can be done without root."""
+    """Check all prerequisites for this OS and set up what can be done without root.
+
+    On a fresh install (no saved settings yet) this opens the settings window
+    first, so the user picks their model *before* the warm-model daemon starts —
+    otherwise the daemon would download and warm the default (large-v3) even if
+    they wanted something smaller."""
+    from whisper_dictate import config
+
+    if not config.config_file().exists():
+        print("No saved settings yet — opening the settings window so you can pick "
+              "your model before setup.\n(Close it to accept the defaults.)\n")
+        try:
+            _open_settings_gui()
+        except Exception as e:  # noqa: BLE001 - headless/no-GUI: fall back to defaults
+            print(f"(Couldn't open the settings window: {e}; continuing with defaults.)\n")
+        # Materialize a config file so the daemon and the first-run hotkey check
+        # have a concrete source of truth even if the window was closed unsaved.
+        config.save_config(config.load_config())
+
     from whisper_dictate.init import run_init
     return run_init(model=args.model, with_server=not args.no_server, assume_yes=args.yes)
 
@@ -195,11 +235,7 @@ def cmd_settings(args: argparse.Namespace) -> int:
     """Open the settings GUI to edit saved defaults (model, translation, tone…).
     Prefers the Qt UI; falls back to the plain Tkinter window if PySide6 isn't
     installed."""
-    if _has_pyside6():
-        from whisper_dictate.qtgui import run_settings
-    else:
-        from whisper_dictate.gui import run_settings
-    return run_settings()
+    return _open_settings_gui()
 
 
 def cmd_tray(args: argparse.Namespace) -> int:

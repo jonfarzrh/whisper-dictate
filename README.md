@@ -19,7 +19,7 @@ Every platform needs [uv](https://docs.astral.sh/uv/) and Python ≥ 3.11. For N
 
        uv tool install whisper-dictate
 
-3. **Run init** — it installs the `ydotoold` and warm-model systemd user services, checks `/dev/uinput` access, and verifies everything:
+3. **Run init** — on a fresh install it first opens the settings window so you can pick your model (close it to accept the defaults), then installs the `ydotoold` and warm-model systemd user services, checks `/dev/uinput` access, and verifies everything:
 
        whisper-dictate init       # expect it to finish with "All set ✓"
 
@@ -64,9 +64,9 @@ For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-accelerat
 
 ## Usage
 
-    whisper-dictate settings     # pick your model, language, translation, tone…
-    whisper-dictate init         # set up daemons for your OS
+    whisper-dictate init         # one-stop setup: opens settings on first run, then wires up your OS
     whisper-dictate              # toggle: start, then stop+type
+    whisper-dictate settings     # re-open the settings window any time (model, translation, tone…)
     whisper-dictate start        # explicit start
     whisper-dictate stop         # explicit stop+transcribe+type
     whisper-dictate check        # diagnose platform setup
@@ -74,7 +74,7 @@ For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-accelerat
     whisper-dictate serve        # warm-model daemon (keeps the model in memory)
     whisper-dictate deinit       # remove the services & state that `init` created
 
-Bind `whisper-dictate` (no args = toggle) to a global hotkey in your OS settings.
+Just run **`whisper-dictate init`**. On a fresh install it opens the settings window first so you pick your model *before* anything downloads (close it to accept the defaults), then sets up the daemons for your OS. After that, bind `whisper-dictate` (no args = toggle) to a global hotkey — and if you ever press the hotkey before running `init`, you get a notification telling you to.
 
 ### Settings & tray app (no command line needed)
 
