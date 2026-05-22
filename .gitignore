@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Build / virtualenv
+build/
+dist/
+.venv/
+
+# Editor
+.idea/
+.vscode/
