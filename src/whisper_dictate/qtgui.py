@@ -9,6 +9,7 @@ with a clear message so a hotkey-only install isn't forced to carry Qt.
 """
 from __future__ import annotations
 
+import os
 import sys
 
 from whisper_dictate import config
@@ -503,6 +504,34 @@ def _ensure_app():
     return app, created
 
 
+def _instance_socket_name() -> str:
+    """A per-user name for the single-instance IPC socket, so two users on the
+    same machine each get their own tray (and never collide on the socket)."""
+    import getpass
+
+    try:
+        who = getpass.getuser()
+    except Exception:  # noqa: BLE001 - getuser can raise if no username is resolvable
+        who = str(os.getuid()) if hasattr(os, "getuid") else "user"
+    return f"whisper-dictate-tray-{who}"
+
+
+def _signal_existing_instance(name: str) -> bool:
+    """If a tray is already running, connect to its socket, ask it to surface its
+    settings window, and return True. Return False if no instance is listening."""
+    from PySide6 import QtNetwork
+
+    sock = QtNetwork.QLocalSocket()
+    sock.connectToServer(name)
+    if not sock.waitForConnected(300):
+        return False
+    sock.write(b"show")
+    sock.flush()
+    sock.waitForBytesWritten(300)
+    sock.disconnectFromServer()
+    return True
+
+
 def run_settings() -> int:
     """Open the settings window standalone (blocks until closed)."""
     try:
@@ -522,7 +551,7 @@ def run_tray() -> int:
     """Run the system-tray application: a mic icon with Start/Stop, Settings, and
     Quit, plus a recording-state indicator. This is the long-running 'app'."""
     try:
-        from PySide6 import QtCore, QtWidgets
+        from PySide6 import QtCore, QtNetwork, QtWidgets
     except Exception:  # noqa: BLE001
         print(_GUI_MISSING_MSG)
         return 1
@@ -531,6 +560,12 @@ def run_tray() -> int:
 
     app, _ = _ensure_app()
     app.setQuitOnLastWindowClosed(False)  # closing settings must not kill the tray
+
+    # Single-instance guard: if a tray is already running, hand off to it (raising
+    # its settings window) and exit, instead of adding a second duplicate icon.
+    sock_name = _instance_socket_name()
+    if _signal_existing_instance(sock_name):
+        return 0
 
     if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
         print("No system tray detected on this desktop. Use `whisper-dictate "
@@ -565,6 +600,22 @@ def run_tray() -> int:
     act_toggle.triggered.connect(toggle_dictation)
     act_settings.triggered.connect(open_settings)
     act_quit.triggered.connect(app.quit)
+
+    # Become the primary instance: listen on the IPC socket so later launches can
+    # find us. removeServer clears a stale socket left by a crashed instance (we
+    # only reach here after confirming no live instance answered above).
+    QtNetwork.QLocalServer.removeServer(sock_name)
+    server = QtNetwork.QLocalServer(app)
+    server.listen(sock_name)
+
+    def on_new_connection():
+        # Any incoming connection is another launch asking us to surface the UI;
+        # the payload is advisory, so we don't need to wait to read it.
+        conn = server.nextPendingConnection()
+        if conn is not None:
+            conn.disconnected.connect(conn.deleteLater)
+        open_settings()
+    server.newConnection.connect(on_new_connection)
 
     def on_activated(reason):
         if reason == QtWidgets.QSystemTrayIcon.Trigger:       # left click
