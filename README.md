@@ -66,6 +66,7 @@ For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-accelerat
 
     whisper-dictate init         # check prerequisites & set up daemons for your OS
     whisper-dictate deinit       # remove the services & state that `init` created
+    whisper-dictate settings     # open the settings window (model, translation, tone…)
     whisper-dictate              # toggle: start, then stop+type
     whisper-dictate start        # explicit start
     whisper-dictate stop         # explicit stop+transcribe+type
@@ -75,6 +76,12 @@ For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-accelerat
 
 Bind `whisper-dictate` (no args = toggle) to a global hotkey in your OS settings.
 
+### Settings (no command line needed)
+
+    whisper-dictate settings     # (aliases: gui, config)
+
+Opens a window to choose your model, spoken language, translation target and tone — no flags to remember. Your choices are saved to a config file (`~/.config/whisper-dictate/config.json`, or the platform equivalent) that **every** dictation reads, so once you've set it there, a bare hotkey press just does the right thing. Passing a flag on the command line still overrides the saved value for that run. The window also has a **Check Ollama** button so you can confirm translation/restyle will work before relying on it.
+
 When a `serve` daemon is running, the toggle automatically routes through it for near-instant (~0.3s) transcription; otherwise it loads the model in-process each time (~3s). Models are cached in `~/.cache/huggingface/` after first download.
 
 ### Options
@@ -83,6 +90,35 @@ When a `serve` daemon is running, the toggle automatically routes through it for
     --device auto           # auto | cuda | cpu
     --compute-type auto     # float16 | int8 | int8_float16 | ...
     --language en           # ISO code, or "" to auto-detect
+
+## Translate & restyle (optional, via Ollama)
+
+After transcribing, the text can be run through a local [Ollama](https://ollama.com) model before it's typed — to **translate** it into another language, **rewrite** it in a given tone, or both at once. This is entirely opt-in: with neither set, nothing touches the network and dictation behaves exactly as before.
+
+> The easiest way to turn this on is the [settings window](#settings-no-command-line-needed) (`whisper-dictate settings`) — pick a "Translate to" language and/or a tone and save. The flags below do the same thing for command-line/hotkey use.
+
+**Setup:** install Ollama and pull a model (any chat model works):
+
+    ollama pull llama3.1:8b      # the default; or qwen2.5:7b (stronger multilingual), gemma2:9b, etc.
+
+Ollama runs as its own resident server, so — like the warm Whisper daemon — the model stays hot between calls.
+
+If translation/tone is enabled in your settings, `whisper-dictate init` checks that Ollama is reachable and that your configured model is present — pulling it for you with `init --yes`, or listing the `ollama pull` command otherwise. The warm-model daemon `init` installs also preloads whatever Whisper model you saved in settings (not always `large-v3`).
+
+    --translate-to LANG     # translate into this language (name or code: "English", "Spanish", "ja")
+    --style TONE            # rewrite in a tone — see below
+    --ollama-model NAME     # model to use (default: llama3.1:8b)
+    --ollama-host URL       # default: $OLLAMA_HOST or http://localhost:11434
+
+**Translation auto-detects the spoken language** — you only ever pick the *target*, never the source. So `--translate-to English` turns Korean (or anything) you speak into English; `--translate-to Spanish` turns your English into Spanish. (Whisper's own translate task only ever outputs English; routing through Ollama is what makes any → any possible.)
+
+**`--style`** takes a preset — `professional`, `personable`, `concise`, `casual` — or any free-form instruction, e.g. `--style "as a polite email"`. Combine the two flags to translate *and* restyle in one pass.
+
+    whisper-dictate --style professional
+    whisper-dictate --translate-to English
+    whisper-dictate --translate-to Spanish --style personable
+
+Bind each variant to its own hotkey to get, say, plain dictation on one key and "clean this up professionally" on another. If Ollama is unreachable or errors, you get a notification and your **raw transcript is typed anyway** — your words are never lost.
 
 ## GPU acceleration
 

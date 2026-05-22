@@ -21,13 +21,25 @@ def _notify(msg: str) -> None:
     notify(msg)
 
 
+def _effective_language(args: argparse.Namespace) -> str | None:
+    """Whisper language for this run. Translating implies an arbitrary spoken
+    language, so we let Whisper auto-detect the source rather than forcing the
+    `en` default — the user picks only the *target* (`--translate-to`), never the
+    source. An explicit non-default `--language` still wins. Empty string -> auto."""
+    lang = args.language
+    if getattr(args, "translate_to", None) and lang == "en":
+        return None  # auto-detect the spoken language
+    return lang or None  # "" -> None (auto-detect)
+
+
 def _transcribe(args: argparse.Namespace, wav: Path) -> str:
     """Transcribe via the warm-model daemon if it's running, else in-process.
     The daemon keeps the model resident so this avoids the per-call load cost."""
     from whisper_dictate.server import transcribe_via_server
 
+    language = _effective_language(args)
     text = transcribe_via_server(
-        wav, args.model, args.device, args.compute_type, args.language, args.vad
+        wav, args.model, args.device, args.compute_type, language, args.vad
     )
     if text is not None:
         return text
@@ -38,9 +50,45 @@ def _transcribe(args: argparse.Namespace, wav: Path) -> str:
         model_name=args.model,
         device=args.device,
         compute_type=args.compute_type,
-        language=args.language,
+        language=language,
         vad=args.vad,
     )
+
+
+def _postprocess(args: argparse.Namespace, text: str) -> str:
+    """Optionally translate and/or restyle the transcript via Ollama. Best-effort:
+    if Ollama is unavailable or errors, notify and return the raw transcript so the
+    user's words are never lost."""
+    translate_to = getattr(args, "translate_to", None)
+    style = getattr(args, "style", None)
+    if not (translate_to or style):
+        return text
+
+    from whisper_dictate import polish
+
+    # Warn clearly for the predictable misconfigurations, rather than letting them
+    # surface as an opaque transport error — then fall back to raw text.
+    status, detail = polish.diagnose(args.ollama_host)
+    if status != "ok":
+        first = detail.splitlines()[0] if detail else "Ollama unavailable"
+        _notify(f"⚠️ {first} Typed raw transcript (translation/tone skipped).")
+        return text
+    if not polish.model_installed(args.ollama_model, args.ollama_host):
+        _notify(f"⚠️ Model '{args.ollama_model}' not installed — run "
+                f"`whisper-dictate settings` to download it. Typed raw transcript.")
+        return text
+
+    try:
+        return polish.postprocess(
+            text,
+            translate_to=translate_to,
+            style=style,
+            model=args.ollama_model,
+            host=args.ollama_host,
+        )
+    except Exception as e:  # noqa: BLE001 - degrade to raw transcript, never drop text
+        _notify(f"⚠️ Ollama post-process failed — typing raw transcript ({e})")
+        return text
 
 
 def _transcribe_type_cleanup(args: argparse.Namespace, wav: Path) -> int:
@@ -52,7 +100,12 @@ def _transcribe_type_cleanup(args: argparse.Namespace, wav: Path) -> int:
         _notify("❌ No speech detected")
         return 1  # keep the WAV for debugging
 
-    get_backend().type_text(text)
+    text = _postprocess(args, text)
+    try:
+        get_backend().type_text(text)
+    except Exception as e:  # noqa: BLE001 - surface typing failures; they're otherwise silent
+        _notify(f"❌ Couldn't type the text: {e}")
+        return 1  # keep the WAV so the dictation isn't lost
     wav.unlink(missing_ok=True)  # success — discard the recording
     _notify(f"✓ Typed {len(text)} chars")
     return 0
@@ -105,7 +158,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def cmd_transcribe_file(args: argparse.Namespace) -> int:
     """Transcribe an existing audio file (for testing without recording)."""
-    print(_transcribe(args, Path(args.path)))
+    print(_postprocess(args, _transcribe(args, Path(args.path))))
     return 0
 
 
@@ -133,6 +186,12 @@ def cmd_deinit(args: argparse.Namespace) -> int:
     return run_deinit()
 
 
+def cmd_settings(args: argparse.Namespace) -> int:
+    """Open the settings GUI to edit saved defaults (model, translation, tone…)."""
+    from whisper_dictate.gui import run_settings
+    return run_settings()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="whisper-dictate", description=__doc__)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -140,24 +199,48 @@ def build_parser() -> argparse.ArgumentParser:
     # Hidden flag used internally when the CLI re-execs itself as a recorder worker
     p.add_argument("--record-worker", metavar="PATH", help=argparse.SUPPRESS)
 
+    # Saved GUI settings become the flag *defaults*, so a bare hotkey press picks
+    # them up; an explicit --flag on the command line still overrides them.
+    from whisper_dictate.config import load_config
+    cfg = load_config()
+
     def add_model_opts(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--model", default="large-v3",
+        sp.add_argument("--model", default=cfg["model"],
                         help="Whisper model (tiny, base, small, medium, large-v3). Default: large-v3")
-        sp.add_argument("--device", default="auto",
+        sp.add_argument("--device", default=cfg["device"],
                         choices=["auto", "cuda", "cpu"],
                         help="Inference device. Default: auto")
-        sp.add_argument("--compute-type", default="auto",
+        sp.add_argument("--compute-type", default=cfg["compute_type"],
                         help="float16, int8, int8_float16, etc. Default: auto")
-        sp.add_argument("--language", default="en",
+        sp.add_argument("--language", default=cfg["language"],
                         help="Language code, or empty string to auto-detect. Default: en")
-        sp.add_argument("--vad", action="store_true",
-                        help="Enable voice-activity detection filtering. Off by default "
-                             "(it can drop quiet speech in toggle dictation).")
+        sp.add_argument("--vad", action=argparse.BooleanOptionalAction, default=bool(cfg["vad"]),
+                        help="Voice-activity detection filtering (--vad / --no-vad). Off by "
+                             "default (it can drop quiet speech in toggle dictation).")
+
+    def add_polish_opts(sp: argparse.ArgumentParser) -> None:
+        """Optional LLM post-processing via a local Ollama server. Inert unless
+        --translate-to or --style is given."""
+        from whisper_dictate.polish import DEFAULT_MODEL, STYLE_PRESETS
+        sp.add_argument("--translate-to", metavar="LANG", default=cfg["translate_to"] or None,
+                        help="Translate the transcript into this language (name or code, "
+                             "e.g. 'English', 'Spanish', 'ja'). The spoken language is "
+                             "auto-detected. Requires Ollama.")
+        sp.add_argument("--style", metavar="TONE", default=cfg["style"] or None,
+                        help="Rewrite the transcript in this tone. Presets: "
+                             + ", ".join(sorted(STYLE_PRESETS))
+                             + ". Or pass a free-form instruction, e.g. "
+                             + "--style 'as a polite email'. Requires Ollama.")
+        sp.add_argument("--ollama-model", default=cfg["ollama_model"] or DEFAULT_MODEL,
+                        help=f"Ollama model for translate/restyle. Default: {DEFAULT_MODEL}")
+        sp.add_argument("--ollama-host", default=cfg["ollama_host"] or None,
+                        help="Ollama base URL. Default: $OLLAMA_HOST or http://localhost:11434")
 
     sub = p.add_subparsers(dest="command")
 
     sp_toggle = sub.add_parser("toggle", help="Toggle recording (default action)")
     add_model_opts(sp_toggle)
+    add_polish_opts(sp_toggle)
     sp_toggle.set_defaults(func=cmd_toggle)
 
     sp_start = sub.add_parser("start", help="Start recording")
@@ -166,6 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp_stop = sub.add_parser("stop", help="Stop recording, transcribe, and type")
     add_model_opts(sp_stop)
+    add_polish_opts(sp_stop)
     sp_stop.set_defaults(func=cmd_stop)
 
     sp_check = sub.add_parser("check", help="Check platform setup")
@@ -174,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_tf = sub.add_parser("transcribe", help="Transcribe an audio file to stdout")
     sp_tf.add_argument("path", help="Path to audio file")
     add_model_opts(sp_tf)
+    add_polish_opts(sp_tf)
     sp_tf.set_defaults(func=cmd_transcribe_file)
 
     sp_serve = sub.add_parser("serve", help="Run the warm-model daemon (keeps the model in memory for instant transcription)")
@@ -181,8 +266,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp_serve.set_defaults(func=cmd_serve)
 
     sp_init = sub.add_parser("init", help="Check prerequisites and set up daemons for this OS (painless install)")
-    sp_init.add_argument("--model", default="large-v3",
-                         help="Model the warm-model daemon should preload. Default: large-v3")
+    sp_init.add_argument("--model", default=cfg["model"],
+                         help="Model the warm-model daemon should preload. "
+                              f"Default: your saved setting ({cfg['model']}).")
     sp_init.add_argument("--no-server", action="store_true",
                          help="Don't install the warm-model daemon service")
     sp_init.add_argument("--yes", action="store_true",
@@ -191,6 +277,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp_deinit = sub.add_parser("deinit", help="Remove the services and state that `init` created")
     sp_deinit.set_defaults(func=cmd_deinit)
+
+    sp_settings = sub.add_parser("settings", aliases=["gui", "config"],
+                                 help="Open the settings window (model, translation, tone…)")
+    sp_settings.set_defaults(func=cmd_settings)
 
     return p
 

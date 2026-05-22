@@ -54,9 +54,9 @@ def run_init(model: str = "large-v3", with_server: bool = True, assume_yes: bool
     if sys.platform.startswith("linux"):
         return _init_linux(model, with_server, assume_yes)
     if sys.platform == "darwin":
-        return _init_macos(model, with_server)
+        return _init_macos(model, with_server, assume_yes)
     if sys.platform == "win32":
-        return _init_windows(model, with_server)
+        return _init_windows(model, with_server, assume_yes)
     print(f"Unsupported platform: {sys.platform}")
     return 1
 
@@ -188,7 +188,7 @@ def _init_linux(model: str, with_server: bool, assume_yes: bool) -> int:
         )
         _say(FIX, f"warm-model daemon installed and started (model: {model}) — first load takes a few seconds")
 
-    return _finish(todo)
+    return _finish(todo, assume_yes)
 
 
 def _linux_pkg_install_cmd(pkgs: list[str]) -> str | None:
@@ -208,7 +208,7 @@ def _linux_pkg_install_cmd(pkgs: list[str]) -> str | None:
 # macOS
 # --------------------------------------------------------------------------- #
 
-def _init_macos(model: str, with_server: bool) -> int:
+def _init_macos(model: str, with_server: bool, assume_yes: bool = False) -> int:
     print("Platform: macOS\n")
     todo: list[str] = []
 
@@ -232,7 +232,7 @@ def _init_macos(model: str, with_server: bool) -> int:
         _setup_launchd_agent(model)
         _say(FIX, f"warm-model launchd agent installed and loaded (model: {model})")
 
-    return _finish(todo)
+    return _finish(todo, assume_yes)
 
 
 def _setup_launchd_agent(model: str) -> None:
@@ -268,7 +268,7 @@ def _setup_launchd_agent(model: str) -> None:
 # Windows
 # --------------------------------------------------------------------------- #
 
-def _init_windows(model: str, with_server: bool) -> int:
+def _init_windows(model: str, with_server: bool, assume_yes: bool = False) -> int:
     print("Platform: Windows\n")
     todo: list[str] = []
 
@@ -299,7 +299,7 @@ def _init_windows(model: str, with_server: bool) -> int:
             _say(WARN, "could not register the logon task; start the daemon manually: whisper-dictate serve")
             todo.append("run `whisper-dictate serve` at logon (Task Scheduler)")
 
-    return _finish(todo)
+    return _finish(todo, assume_yes)
 
 
 # --------------------------------------------------------------------------- #
@@ -372,7 +372,82 @@ def _clean_state() -> None:
                 pass
 
 
-def _finish(todo: list[str]) -> int:
+def _pull_with_progress(model: str, host: str | None) -> None:
+    """Pull an Ollama model, printing coarse (~10%) progress so a one-time init
+    doesn't spam a line per percent."""
+    from whisper_dictate import polish
+
+    last_bucket = [-1]
+
+    def on_prog(msg: dict) -> None:
+        total, done = msg.get("total"), msg.get("completed")
+        if total and done:
+            bucket = int(done * 10 / total)
+            if bucket != last_bucket[0]:
+                last_bucket[0] = bucket
+                print(f"        {msg.get('status', 'downloading')} {bucket * 10}%")
+        elif msg.get("status"):
+            print(f"        {msg['status']}")
+
+    polish.pull_model(model, host=host, on_progress=on_prog)
+
+
+def _check_ollama(todo: list[str], assume_yes: bool) -> None:
+    """If saved settings enable translation/tone, verify the Ollama side: server
+    reachable + the configured model present. Pulls the model with --yes, else
+    records it as a manual step. A no-op when neither feature is configured, so
+    plain dictation setups never see Ollama mentioned."""
+    from whisper_dictate import config, polish
+
+    cfg = config.load_config()
+    translate, style = cfg.get("translate_to"), cfg.get("style")
+    if not (translate or style):
+        return  # translation/tone off -> Ollama isn't needed
+
+    feat = " + ".join(f for f in (
+        "translation" if translate else None,
+        "tone" if style else None,
+    ) if f)
+    model = cfg.get("ollama_model") or polish.DEFAULT_MODEL
+    host = cfg.get("ollama_host") or None
+
+    status, detail = polish.diagnose(host)
+    if status != "ok":
+        # `detail` is a short multi-line message ending with the fix (install
+        # command or how to start the server). Show it, and record a one-line TODO.
+        _say(TODO, f"{feat} is enabled but Ollama isn't ready:")
+        for line in detail.splitlines():
+            print(f"        {line}")
+        if status == "not_installed":
+            todo.append(f"install Ollama: {polish.install_hint()}")
+        elif status == "not_running":
+            todo.append("start Ollama (`ollama serve`, or launch the app)")
+        else:
+            todo.append(f"make Ollama reachable at {host or polish.default_host()}")
+        return
+
+    _say(OK, "Ollama reachable")
+    if polish.model_installed(model, host):
+        _say(OK, f"Ollama model present: {model} (for {feat})")
+        return
+
+    if assume_yes:
+        _say(FIX, f"pulling Ollama model {model} for {feat} (can be several GB)...")
+        try:
+            _pull_with_progress(model, host)
+            _say(OK, f"Ollama model downloaded: {model}")
+        except Exception as e:  # noqa: BLE001 - report and leave it as a manual step
+            _say(WARN, f"could not pull {model}: {e}")
+            todo.append(f"download the model: ollama pull {model}")
+    else:
+        _say(TODO, f"Ollama model '{model}' not installed (needed for {feat})")
+        todo.append(f"download it: re-run `whisper-dictate init --yes`, "
+                    f"or `ollama pull {model}`, or use `whisper-dictate settings`")
+
+
+def _finish(todo: list[str], assume_yes: bool = False) -> int:
+    _check_ollama(todo, assume_yes)
+
     print("\nVerification:")
     try:
         from whisper_dictate.backends import get_backend

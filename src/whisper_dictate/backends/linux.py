@@ -1,4 +1,13 @@
-"""Linux backend: prefers ydotool (works on Wayland + X11), falls back to xdotool."""
+"""Linux backend: prefers ydotool (works on Wayland + X11), falls back to xdotool.
+
+Typing non-ASCII text (i.e. any translation that isn't plain English) is the
+tricky part: ydotool's `type` synthesises key *codes* from the active keyboard
+layout, so accented Latin characters get dropped and non-Latin scripts (Korean,
+Japanese, Arabic, …) produce nothing at all. To type arbitrary Unicode reliably
+we instead put the text on the clipboard and paste it (Ctrl+V). Plain-ASCII text
+still goes through fast keystroke typing, so English dictation is unchanged and
+doesn't touch the clipboard.
+"""
 from __future__ import annotations
 
 import os
@@ -6,6 +15,32 @@ import shutil
 import subprocess
 
 from .base import TypingBackend
+
+# ydotool's `key` syntax changed incompatibly between releases:
+#   * 0.1.x  expects key *names* joined with '+', e.g.  `ctrl+v`
+#   * 1.0+   expects <keycode>:<state> pairs, e.g.       `29:1 47:1 47:0 29:0`
+# Feeding one syntax to the other version doesn't error — it types garbage (the
+# 1.0 codes 29/47 land as the digits "2442" on 0.1.x). So we detect which the
+# installed binary wants by inspecting its help text, and cache the answer.
+_PASTE_KEYS_NAME = ["ctrl+v"]                       # ydotool 0.1.x
+_PASTE_KEYS_CODE = ["29:1", "47:1", "47:0", "29:0"]  # ydotool 1.0+ (29=LEFTCTRL, 47=V)
+_paste_keys_cache: list[str] | None = None
+
+
+def _ydotool_paste_keys() -> list[str]:
+    """The argv tail for a Ctrl+V via `ydotool key`, matching the installed
+    version's syntax. 0.1.x help describes sequences 'separated by plus (+)';
+    1.0+ does not — so the presence of that phrasing selects the name syntax."""
+    global _paste_keys_cache
+    if _paste_keys_cache is None:
+        try:
+            r = subprocess.run(["ydotool", "key", "--help"],
+                               capture_output=True, text=True)
+            help_txt = (r.stdout + r.stderr).lower()
+        except Exception:  # noqa: BLE001 - if we can't probe, assume the legacy syntax
+            help_txt = "plus"
+        _paste_keys_cache = _PASTE_KEYS_NAME if "plus" in help_txt else _PASTE_KEYS_CODE
+    return _paste_keys_cache
 
 
 class LinuxBackend(TypingBackend):
@@ -23,6 +58,30 @@ class LinuxBackend(TypingBackend):
     def _session_type(self) -> str:
         return os.environ.get("XDG_SESSION_TYPE", "unknown")
 
+    def _ydotool_socket(self) -> str | None:
+        """Resolve the ydotoold socket. The hotkey-launched process may not have
+        YDOTOOL_SOCKET in its environment, so probe the locations ydotoold uses
+        across versions and return the first that exists."""
+        candidates = [
+            os.environ.get("YDOTOOL_SOCKET"),
+            "/tmp/.ydotool_socket",
+            os.path.join(os.path.expanduser("~"), ".ydotool_socket"),
+        ]
+        xrd = os.environ.get("XDG_RUNTIME_DIR")
+        if xrd:
+            candidates.append(os.path.join(xrd, ".ydotool_socket"))
+        for c in candidates:
+            if c and os.path.exists(c):
+                return c
+        return None
+
+    def _ydotool_env(self) -> dict:
+        env = {**os.environ}
+        sock = self._ydotool_socket()
+        if sock:
+            env["YDOTOOL_SOCKET"] = sock
+        return env
+
     def type_text(self, text: str) -> None:
         tool = self._tool()
         if tool is None:
@@ -31,16 +90,36 @@ class LinuxBackend(TypingBackend):
                 "Install with: sudo apt install ydotool"
             )
         if tool == "ydotool":
-            subprocess.run(
-                ["ydotool", "type", "--key-delay", "3", "--", text],
-                check=True,
-                env={**os.environ},
-            )
+            # ydotool can't synthesise non-ASCII characters; paste those instead.
+            if text.isascii():
+                subprocess.run(
+                    ["ydotool", "type", "--key-delay", "3", "--", text],
+                    check=True, env=self._ydotool_env(),
+                )
+            else:
+                self._paste_ydotool(text)
         else:
+            # xdotool handles Unicode itself, so a plain type is fine on X11.
             subprocess.run(
                 ["xdotool", "type", "--delay", "3", "--", text],
                 check=True,
             )
+
+    def _paste_ydotool(self, text: str) -> None:
+        """Type arbitrary Unicode by routing it through the clipboard: copy with
+        wl-copy, then paste with a synthesised Ctrl+V via ydotool. This replaces
+        the current clipboard contents (a deliberate, visible side effect)."""
+        if not shutil.which("wl-copy"):
+            raise RuntimeError(
+                "Typing translated/Unicode text on Wayland needs wl-clipboard "
+                "(ydotool can't type non-ASCII characters). Install it:\n"
+                "  sudo apt install wl-clipboard"
+            )
+        subprocess.run(["wl-copy"], input=text, text=True, check=True)
+        subprocess.run(
+            ["ydotool", "key", *_ydotool_paste_keys()],
+            check=True, env=self._ydotool_env(),
+        )
 
     def check(self) -> tuple[bool, str]:
         session = self._session_type()
@@ -61,12 +140,18 @@ class LinuxBackend(TypingBackend):
             )
 
         if tool == "ydotool":
-            socket = os.environ.get("YDOTOOL_SOCKET")
-            if not socket:
-                return True, (
-                    "ydotool found, but YDOTOOL_SOCKET is not set. If typing fails, "
-                    "export YDOTOOL_SOCKET=$HOME/.ydotool_socket and ensure the "
-                    "ydotoold daemon is running."
+            notes = []
+            if self._ydotool_socket() is None:
+                notes.append(
+                    "ydotoold socket not found — start the daemon (the ydotoold "
+                    "user service) or set YDOTOOL_SOCKET."
                 )
+            if not shutil.which("wl-copy"):
+                notes.append(
+                    "wl-clipboard missing — translated/Unicode text can't be typed "
+                    "until you install it: sudo apt install wl-clipboard"
+                )
+            if notes:
+                return True, "ydotool found, but:\n  - " + "\n  - ".join(notes)
 
         return True, f"OK ({tool} on {session})"
