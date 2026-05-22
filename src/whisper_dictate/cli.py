@@ -186,10 +186,27 @@ def cmd_deinit(args: argparse.Namespace) -> int:
     return run_deinit()
 
 
+def _has_pyside6() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("PySide6") is not None
+
+
 def cmd_settings(args: argparse.Namespace) -> int:
-    """Open the settings GUI to edit saved defaults (model, translation, tone…)."""
-    from whisper_dictate.gui import run_settings
+    """Open the settings GUI to edit saved defaults (model, translation, tone…).
+    Prefers the Qt UI; falls back to the plain Tkinter window if PySide6 isn't
+    installed."""
+    if _has_pyside6():
+        from whisper_dictate.qtgui import run_settings
+    else:
+        from whisper_dictate.gui import run_settings
     return run_settings()
+
+
+def cmd_tray(args: argparse.Namespace) -> int:
+    """Run the system-tray application (the long-running 'app'): a mic icon with
+    dictation toggle, settings, and quit. Requires the Qt GUI (`gui` extra)."""
+    from whisper_dictate.qtgui import run_tray
+    return run_tray()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -281,6 +298,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp_settings = sub.add_parser("settings", aliases=["gui", "config"],
                                  help="Open the settings window (model, translation, tone…)")
     sp_settings.set_defaults(func=cmd_settings)
+
+    sp_tray = sub.add_parser("tray", aliases=["app"],
+                             help="Run the system-tray app (launch this as an application)")
+    sp_tray.set_defaults(func=cmd_tray)
 
     return p
 

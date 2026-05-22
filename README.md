@@ -76,11 +76,16 @@ For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-accelerat
 
 Bind `whisper-dictate` (no args = toggle) to a global hotkey in your OS settings.
 
-### Settings (no command line needed)
+### Settings & tray app (no command line needed)
 
-    whisper-dictate settings     # (aliases: gui, config)
+The graphical interface (PySide6/Qt) is included by default — no extra needed:
 
-Opens a window to choose your model, spoken language, translation target and tone — no flags to remember. Your choices are saved to a config file (`~/.config/whisper-dictate/config.json`, or the platform equivalent) that **every** dictation reads, so once you've set it there, a bare hotkey press just does the right thing. Passing a flag on the command line still overrides the saved value for that run. The window also has a **Check Ollama** button so you can confirm translation/restyle will work before relying on it.
+    whisper-dictate settings     # open the settings window (aliases: gui, config)
+    whisper-dictate tray         # run the system-tray app (alias: app)
+
+**Settings window** — choose your model, spoken language, translation target and tone with no flags to remember. Translation and tone are **independent**: tick *Apply tone* without *Translate to* and your speech is just rewritten (e.g. made professional) in the same language. Choices are saved to a config file (`~/.config/whisper-dictate/config.json`, or the platform equivalent) that **every** dictation reads, so a bare hotkey press does the right thing; a command-line flag still overrides for that run. A **Check Ollama** button confirms translation/tone will work, and if the chosen model isn't downloaded, saving offers to pull it with a progress bar.
+
+**Tray app** — `whisper-dictate tray` runs a microphone icon in your system tray (menu bar): left-click to start/stop dictation, right-click for Settings and Quit, and the icon turns red while recording. `whisper-dictate init` installs a desktop launcher, so you can also just start **whisper-dictate** from your applications menu.
 
 When a `serve` daemon is running, the toggle automatically routes through it for near-instant (~0.3s) transcription; otherwise it loads the model in-process each time (~3s). Models are cached in `~/.cache/huggingface/` after first download.
 

@@ -179,7 +179,11 @@ def _init_linux(model: str, with_server: bool, assume_yes: bool) -> int:
         )
         _say(FIX, "ydotoold user service installed and started")
 
-    # 7. Warm-model server service (autoloads the model)
+    # 7. Desktop launcher so the tray app shows up in the applications menu.
+    _install_desktop_entry()
+    _say(FIX, "desktop launcher installed (find “whisper-dictate” in your app menu)")
+
+    # 8. Warm-model server service (autoloads the model)
     if with_server:
         _install_user_service(
             "whisper-dictate-server.service",
@@ -189,6 +193,35 @@ def _init_linux(model: str, with_server: bool, assume_yes: bool) -> int:
         _say(FIX, f"warm-model daemon installed and started (model: {model}) — first load takes a few seconds")
 
     return _finish(todo, assume_yes)
+
+
+def _launcher_exec() -> str:
+    """The command a desktop launcher should run to open the tray app. Prefer the
+    installed console script; fall back to running the module with this Python."""
+    exe = shutil.which("whisper-dictate")
+    return f"{exe} tray" if exe else f"{sys.executable} -m whisper_dictate tray"
+
+
+def _install_desktop_entry() -> None:
+    """Write a freedesktop .desktop entry so the tray app appears in the
+    application menu (and can be pinned/launched like any other app)."""
+    apps = Path.home() / ".local" / "share" / "applications"
+    apps.mkdir(parents=True, exist_ok=True)
+    exec_line = _launcher_exec()
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=whisper-dictate",
+        "GenericName=Dictation",
+        "Comment=Local speech-to-text with translation and tone",
+        "Exec=" + exec_line,
+        "Icon=audio-input-microphone",
+        "Terminal=false",
+        "Categories=Utility;AudioVideo;Accessibility;",
+        "Keywords=dictation;speech;transcribe;whisper;translate;",
+        "StartupNotify=false",
+    ]
+    (apps / "whisper-dictate.desktop").write_text("\n".join(lines) + "\n")
 
 
 def _linux_pkg_install_cmd(pkgs: list[str]) -> str | None:
@@ -334,6 +367,10 @@ def _deinit_linux() -> None:
             _say(FIX, f"removed and stopped {svc}")
         else:
             _say(OK, f"{svc} was not installed")
+    launcher = Path.home() / ".local" / "share" / "applications" / "whisper-dictate.desktop"
+    if launcher.exists():
+        launcher.unlink(missing_ok=True)
+        _say(FIX, "removed the desktop launcher")
 
 
 def _deinit_macos() -> None:
