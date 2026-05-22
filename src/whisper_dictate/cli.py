@@ -8,9 +8,7 @@ from pathlib import Path
 from whisper_dictate import __version__
 from whisper_dictate.backends import get_backend
 from whisper_dictate.recorder import (
-    audio_file,
     is_recording,
-    pid_file,
     run_record_worker,
     start_recording,
     stop_recording,
@@ -45,6 +43,21 @@ def _transcribe(args: argparse.Namespace, wav: Path) -> str:
     )
 
 
+def _transcribe_type_cleanup(args: argparse.Namespace, wav: Path) -> int:
+    """Transcribe the WAV, type the result, and clean up. The recording is deleted
+    only after a successful, non-empty transcription is typed; an empty result or
+    a failure leaves the WAV in place so it can be inspected."""
+    text = _transcribe(args, wav)
+    if not text:
+        _notify("❌ No speech detected")
+        return 1  # keep the WAV for debugging
+
+    get_backend().type_text(text)
+    wav.unlink(missing_ok=True)  # success — discard the recording
+    _notify(f"✓ Typed {len(text)} chars")
+    return 0
+
+
 def cmd_toggle(args: argparse.Namespace) -> int:
     """Start recording if idle; stop + transcribe + type if recording."""
     if is_recording():
@@ -53,17 +66,7 @@ def cmd_toggle(args: argparse.Namespace) -> int:
         if wav is None or not wav.exists():
             _notify("❌ No audio captured")
             return 1
-
-        text = _transcribe(args, wav)
-
-        if not text:
-            _notify("❌ No speech detected")
-            return 1
-
-        backend = get_backend()
-        backend.type_text(text)
-        _notify(f"✓ Typed {len(text)} chars")
-        return 0
+        return _transcribe_type_cleanup(args, wav)
     else:
         start_recording()
         _notify("🎙️ Recording... (run again to stop)")
@@ -88,16 +91,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if wav is None or not wav.exists():
         _notify("❌ No audio")
         return 1
-
-    text = _transcribe(args, wav)
-    if not text:
-        _notify("❌ No speech detected")
-        return 1
-
-    backend = get_backend()
-    backend.type_text(text)
-    _notify(f"✓ Typed {len(text)} chars")
-    return 0
+    return _transcribe_type_cleanup(args, wav)
 
 
 def cmd_check(args: argparse.Namespace) -> int:
