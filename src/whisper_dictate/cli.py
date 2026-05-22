@@ -283,9 +283,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp_serve.set_defaults(func=cmd_serve)
 
     sp_init = sub.add_parser("init", help="Check prerequisites and set up daemons for this OS (painless install)")
-    sp_init.add_argument("--model", default=cfg["model"],
-                         help="Model the warm-model daemon should preload. "
-                              f"Default: your saved setting ({cfg['model']}).")
+    sp_init.add_argument("--model", default=None,
+                         help="Pin the warm-model daemon to a specific model. By default "
+                              "the daemon follows your saved settings, so changing the model "
+                              "in the settings window takes effect with no re-init.")
     sp_init.add_argument("--no-server", action="store_true",
                          help="Don't install the warm-model daemon service")
     sp_init.add_argument("--yes", action="store_true",

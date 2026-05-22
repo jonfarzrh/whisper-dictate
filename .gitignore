@@ -11,3 +11,6 @@ dist/
 # Editor
 .idea/
 .vscode/
+
+.claude/
+CLAUDE.md

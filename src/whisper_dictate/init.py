@@ -47,9 +47,15 @@ def _pynput_ok() -> bool:
         return False
 
 
-def run_init(model: str = "large-v3", with_server: bool = True, assume_yes: bool = False) -> int:
+def run_init(model: str | None = None, with_server: bool = True, assume_yes: bool = False) -> int:
     """Entry point for `whisper-dictate init`. Returns 0 if fully ready, 1 if
-    manual (root) steps remain."""
+    manual (root) steps remain.
+
+    ``model`` is normally None: the warm-model service is installed as a plain
+    ``serve`` that reads the model from saved settings, so the settings window is
+    the single source of truth and re-running init isn't needed after changing the
+    model. Pass an explicit model only to pin the daemon to one regardless of
+    settings."""
     print("whisper-dictate init\n")
     if sys.platform.startswith("linux"):
         return _init_linux(model, with_server, assume_yes)
@@ -59,6 +65,14 @@ def run_init(model: str = "large-v3", with_server: bool = True, assume_yes: bool
         return _init_windows(model, with_server, assume_yes)
     print(f"Unsupported platform: {sys.platform}")
     return 1
+
+
+def _model_note(model: str | None) -> str:
+    """How to describe the warm-model service's model in init output."""
+    if model:
+        return f"model: {model}"
+    from whisper_dictate import config
+    return f"follows your saved settings: {config.load_config()['model']}"
 
 
 # --------------------------------------------------------------------------- #
@@ -185,12 +199,13 @@ def _init_linux(model: str, with_server: bool, assume_yes: bool) -> int:
 
     # 8. Warm-model server service (autoloads the model)
     if with_server:
+        model_flag = f" --model {model}" if model else ""
         _install_user_service(
             "whisper-dictate-server.service",
             "whisper-dictate warm-model daemon",
-            f"{sys.executable} -m whisper_dictate serve --model {model}",
+            f"{sys.executable} -m whisper_dictate serve{model_flag}",
         )
-        _say(FIX, f"warm-model daemon installed and started (model: {model}) — first load takes a few seconds")
+        _say(FIX, f"warm-model daemon installed and started ({_model_note(model)}) — first load takes a few seconds")
 
     return _finish(todo, assume_yes)
 
@@ -263,20 +278,20 @@ def _init_macos(model: str, with_server: bool, assume_yes: bool = False) -> int:
 
     if with_server:
         _setup_launchd_agent(model)
-        _say(FIX, f"warm-model launchd agent installed and loaded (model: {model})")
+        _say(FIX, f"warm-model launchd agent installed and loaded ({_model_note(model)})")
 
     return _finish(todo, assume_yes)
 
 
-def _setup_launchd_agent(model: str) -> None:
+def _setup_launchd_agent(model: str | None) -> None:
     label = "ai.whisperdictate.server"
     plist_dir = Path.home() / "Library" / "LaunchAgents"
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist = plist_dir / f"{label}.plist"
-    args = "".join(
-        f"        <string>{a}</string>\n"
-        for a in (sys.executable, "-m", "whisper_dictate", "serve", "--model", model)
-    )
+    argv = [sys.executable, "-m", "whisper_dictate", "serve"]
+    if model:
+        argv += ["--model", model]
+    args = "".join(f"        <string>{a}</string>\n" for a in argv)
     plist.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -320,13 +335,14 @@ def _init_windows(model: str, with_server: bool, assume_yes: bool = False) -> in
     if with_server:
         # Register a per-user logon scheduled task so the model autoloads at sign-in.
         exe = shutil.which("whisper-dictate") or "whisper-dictate"
+        serve_cmd = f"{exe} serve" + (f" --model {model}" if model else "")
         cmd = (
             f'schtasks /Create /TN "whisper-dictate-server" /SC ONLOGON /F '
-            f'/TR "{exe} serve --model {model}"'
+            f'/TR "{serve_cmd}"'
         )
         rc = subprocess.run(cmd, shell=True).returncode
         if rc == 0:
-            _say(FIX, f"warm-model logon task registered (model: {model})")
+            _say(FIX, f"warm-model logon task registered ({_model_note(model)})")
             _say(TODO, 'start it now without re-logging in: schtasks /Run /TN "whisper-dictate-server"')
         else:
             _say(WARN, "could not register the logon task; start the daemon manually: whisper-dictate serve")

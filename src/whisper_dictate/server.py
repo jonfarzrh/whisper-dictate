@@ -73,13 +73,25 @@ def transcribe_via_server(
 
 
 def run_server(
-    model_name: str = "large-v3",
+    model_name: str | None = None,
     device: str = "auto",
     compute_type: str = "auto",
 ) -> None:
     """Daemon body: preload the model, then serve transcription requests until
-    killed. Models are cached by (model, device, compute_type) so a request for a
-    different model loads it on demand without dropping the warm default."""
+    killed. The model isn't pinned at launch — each request carries the model the
+    client read from saved settings, so changing the model in the settings window
+    takes effect on the very next press with no need to restart the daemon. Only
+    one model is kept resident: a request for a different model evicts the previous
+    one (freeing its VRAM) and loads the new one. When ``model_name`` is None the
+    warm-up model is read from the saved config so the daemon and the GUI share a
+    single source of truth.
+
+    A background thread watches the config file and pre-loads the new model as
+    soon as the settings window saves a change, so even the *first* press after
+    switching models is fast — not just the ones after it."""
+    import threading
+    import time
+
     from whisper_dictate.transcriber import load_model, transcribe_with
 
     if not hasattr(socket, "AF_UNIX"):
@@ -89,14 +101,28 @@ def run_server(
             "it — transcription just loads the model per call."
         )
 
+    if not model_name:
+        from whisper_dictate.config import load_config
+        model_name = str(load_config()["model"])
+
+    # Keep exactly one model resident. The model is a global setting (translation
+    # and tone are the per-hotkey knobs, not the model), so caching more than one
+    # only ever pins stale VRAM after the user switches models in settings. The
+    # lock guards the cache against the config-watcher thread racing the serve loop.
     cache: dict[tuple[str, str, str], object] = {}
+    cache_lock = threading.Lock()
 
     def get_model(m: str, d: str, c: str):
         key = (m, d, c)
-        if key not in cache:
-            print(f"whisper-dictate server: loading {m} ({d})...", file=sys.stderr, flush=True)
-            cache[key] = load_model(m, d, c)
-        return cache[key]
+        with cache_lock:
+            if key not in cache:
+                if cache:  # a different model was resident — drop it and free its VRAM
+                    cache.clear()
+                    import gc
+                    gc.collect()
+                print(f"whisper-dictate server: loading {m} ({d})...", file=sys.stderr, flush=True)
+                cache[key] = load_model(m, d, c)
+            return cache[key]
 
     sp = socket_path()
     sp.unlink(missing_ok=True)
@@ -104,6 +130,32 @@ def run_server(
     # Warm the default model up front so the first real request is fast too.
     get_model(model_name, device, compute_type)
     print(f"whisper-dictate server: ready, listening on {sp}", file=sys.stderr, flush=True)
+
+    def watch_config() -> None:
+        """Poll the config file; when it changes, pre-warm the model it now names
+        so the next press is instant instead of paying a one-time load. Best-effort
+        — any error here must never take the daemon down."""
+        from whisper_dictate.config import config_file, load_config
+
+        cf = config_file()
+        last_mtime = cf.stat().st_mtime if cf.exists() else 0.0
+        while True:
+            time.sleep(2.0)
+            try:
+                mtime = cf.stat().st_mtime if cf.exists() else 0.0
+                if mtime == last_mtime:
+                    continue
+                last_mtime = mtime
+                cfg = load_config()
+                key = (str(cfg["model"]), str(cfg["device"]), str(cfg["compute_type"]))
+                if key not in cache:
+                    print("whisper-dictate server: settings changed, pre-warming "
+                          f"{key[0]}...", file=sys.stderr, flush=True)
+                    get_model(*key)
+            except Exception:  # noqa: BLE001 - the watcher must not crash the daemon
+                pass
+
+    threading.Thread(target=watch_config, daemon=True).start()
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(str(sp))

@@ -64,15 +64,15 @@ For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-accelerat
 
 ## Usage
 
-    whisper-dictate init         # check prerequisites & set up daemons for your OS
-    whisper-dictate deinit       # remove the services & state that `init` created
-    whisper-dictate settings     # open the settings window (model, translation, tone…)
+    whisper-dictate settings     # pick your model, language, translation, tone…
+    whisper-dictate init         # set up daemons for your OS
     whisper-dictate              # toggle: start, then stop+type
     whisper-dictate start        # explicit start
     whisper-dictate stop         # explicit stop+transcribe+type
     whisper-dictate check        # diagnose platform setup
     whisper-dictate transcribe FILE.wav   # transcribe a file to stdout
     whisper-dictate serve        # warm-model daemon (keeps the model in memory)
+    whisper-dictate deinit       # remove the services & state that `init` created
 
 Bind `whisper-dictate` (no args = toggle) to a global hotkey in your OS settings.
 
@@ -88,6 +88,8 @@ The graphical interface (PySide6/Qt) is included by default — no extra needed:
 **Tray app** — `whisper-dictate tray` runs a microphone icon in your system tray (menu bar): left-click to start/stop dictation, right-click for Settings and Quit, and the icon turns red while recording. `whisper-dictate init` installs a desktop launcher, so you can also just start **whisper-dictate** from your applications menu.
 
 When a `serve` daemon is running, the toggle automatically routes through it for near-instant (~0.3s) transcription; otherwise it loads the model in-process each time (~3s). Models are cached in `~/.cache/huggingface/` after first download.
+
+The daemon **follows your settings** — it isn't pinned to one model. Change the model in the settings window and the daemon notices within a couple of seconds and **pre-loads the new model in the background**, so even the *first* press afterwards is instant. It keeps only the model you're actually using resident (freeing the old one's VRAM), so you never have to re-run `init` to switch. (Power users can still pin one with `whisper-dictate init --model …`.) This also means the order of `init` vs `settings` above doesn't matter.
 
 ### Options
 

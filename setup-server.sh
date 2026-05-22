@@ -26,10 +26,17 @@ if [[ ! -x "$BIN" ]]; then
 fi
 ok "Using whisper-dictate at: $BIN"
 
-# Default model can be overridden:  WD_MODEL=medium ./setup-server.sh
-MODEL="${WD_MODEL:-large-v3}"
+# By default the daemon follows your saved settings (the model picked in the
+# settings window). Pin a specific model only if you want to:  WD_MODEL=medium ./setup-server.sh
+if [[ -n "${WD_MODEL:-}" ]]; then
+    SERVE_CMD="$BIN serve --model $WD_MODEL"
+    MODEL_NOTE="model: $WD_MODEL"
+else
+    SERVE_CMD="$BIN serve"
+    MODEL_NOTE="model: follows your saved settings"
+fi
 
-info "Writing systemd user unit: $UNIT (model: $MODEL)"
+info "Writing systemd user unit: $UNIT ($MODEL_NOTE)"
 mkdir -p "$UNIT_DIR"
 cat > "$UNIT" << EOF
 [Unit]
@@ -37,7 +44,7 @@ Description=whisper-dictate warm-model daemon
 After=graphical-session.target
 
 [Service]
-ExecStart=$BIN serve --model $MODEL
+ExecStart=$SERVE_CMD
 Restart=on-failure
 # Keep the model resident; it holds a few GB of VRAM by design.
 
