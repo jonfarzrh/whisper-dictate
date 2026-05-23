@@ -193,9 +193,13 @@ def _init_linux(model: str, with_server: bool, assume_yes: bool) -> int:
         )
         _say(FIX, "ydotoold user service installed and started")
 
-    # 7. Desktop launcher so the tray app shows up in the applications menu.
+    # 7. Desktop launcher so the tray app shows up in the applications menu,
+    #    and an autostart entry so the tray icon is there at next login without
+    #    the user having to click anything.
     _install_desktop_entry()
     _say(FIX, "desktop launcher installed (find “whisper-dictate” in your app menu)")
+    _install_autostart_entry()
+    _say(FIX, "tray autostart enabled (the mic icon will appear at next login)")
 
     # 8. Warm-model server service (autoloads the model)
     if with_server:
@@ -217,26 +221,42 @@ def _launcher_exec() -> str:
     return f"{exe} tray" if exe else f"{sys.executable} -m whisper_dictate tray"
 
 
-def _install_desktop_entry() -> None:
-    """Write a freedesktop .desktop entry so the tray app appears in the
-    application menu (and can be pinned/launched like any other app)."""
-    apps = Path.home() / ".local" / "share" / "applications"
-    apps.mkdir(parents=True, exist_ok=True)
-    exec_line = _launcher_exec()
+def _desktop_entry_body() -> str:
+    """The .desktop entry shared by the app-menu launcher and the autostart
+    entry — same launch command in both, so clicking the menu icon and the
+    autostart firing at login do the exact same thing."""
     lines = [
         "[Desktop Entry]",
         "Type=Application",
         "Name=whisper-dictate",
         "GenericName=Dictation",
         "Comment=Local speech-to-text with translation and tone",
-        "Exec=" + exec_line,
+        "Exec=" + _launcher_exec(),
         "Icon=audio-input-microphone",
         "Terminal=false",
         "Categories=Utility;AudioVideo;Accessibility;",
         "Keywords=dictation;speech;transcribe;whisper;translate;",
         "StartupNotify=false",
     ]
-    (apps / "whisper-dictate.desktop").write_text("\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
+
+
+def _install_desktop_entry() -> None:
+    """Write a freedesktop .desktop entry so the tray app appears in the
+    application menu (and can be pinned/launched like any other app)."""
+    apps = Path.home() / ".local" / "share" / "applications"
+    apps.mkdir(parents=True, exist_ok=True)
+    (apps / "whisper-dictate.desktop").write_text(_desktop_entry_body())
+
+
+def _install_autostart_entry() -> None:
+    """Write a freedesktop autostart entry so the tray app launches at every
+    desktop session start. GNOME respects X-GNOME-Autostart-enabled; KDE and
+    most other DEs read autostart/ regardless."""
+    auto = Path.home() / ".config" / "autostart"
+    auto.mkdir(parents=True, exist_ok=True)
+    body = _desktop_entry_body().rstrip() + "\nX-GNOME-Autostart-enabled=true\n"
+    (auto / "whisper-dictate.desktop").write_text(body)
 
 
 def _linux_pkg_install_cmd(pkgs: list[str]) -> str | None:
@@ -280,7 +300,83 @@ def _init_macos(model: str, with_server: bool, assume_yes: bool = False) -> int:
         _setup_launchd_agent(model)
         _say(FIX, f"warm-model launchd agent installed and loaded ({_model_note(model)})")
 
+    # App-menu launcher + tray autostart so the user gets a clickable entry
+    # in Applications/Launchpad *and* the mic icon appears at login.
+    _install_macos_app_bundle()
+    _say(FIX, "Whisper Dictate.app installed in ~/Applications (Launchpad/Spotlight)")
+    _setup_launchd_tray()
+    _say(FIX, "tray launchd agent installed and loaded (mic icon at login)")
+
     return _finish(todo, assume_yes)
+
+
+_MACOS_APP_DIR = Path.home() / "Applications" / "Whisper Dictate.app"
+_MACOS_TRAY_LABEL = "ai.whisperdictate.tray"
+_MACOS_SERVER_LABEL = "ai.whisperdictate.server"
+
+
+def _macos_tray_exec() -> Path:
+    """Path to the .app bundle's executable — what launchd runs and what
+    Launchpad/Finder invokes when the user clicks the app icon."""
+    return _MACOS_APP_DIR / "Contents" / "MacOS" / "whisper-dictate-tray"
+
+
+def _install_macos_app_bundle() -> None:
+    """Write a minimal .app bundle to ~/Applications so the tray app appears
+    in Launchpad/Spotlight/Finder. The Info.plist sets LSUIElement=true so the
+    bundle runs as a menu-bar-only app (no Dock icon); the inner executable is
+    a shell script that execs the installed ``whisper-dictate tray`` command."""
+    macos_dir = _MACOS_APP_DIR / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True, exist_ok=True)
+    exe = shutil.which("whisper-dictate") or f"{sys.executable} -m whisper_dictate"
+    script = _macos_tray_exec()
+    script.write_text("#!/bin/sh\nexec " + exe + " tray\n")
+    script.chmod(0o755)
+    info = _MACOS_APP_DIR / "Contents" / "Info.plist"
+    info.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "  <dict>\n"
+        "    <key>CFBundleName</key><string>Whisper Dictate</string>\n"
+        "    <key>CFBundleDisplayName</key><string>Whisper Dictate</string>\n"
+        "    <key>CFBundleIdentifier</key><string>ai.whisperdictate.app</string>\n"
+        "    <key>CFBundleExecutable</key><string>whisper-dictate-tray</string>\n"
+        "    <key>CFBundlePackageType</key><string>APPL</string>\n"
+        "    <key>CFBundleVersion</key><string>1.0</string>\n"
+        "    <key>CFBundleShortVersionString</key><string>1.0</string>\n"
+        "    <key>LSUIElement</key><true/>\n"
+        "  </dict>\n"
+        "</plist>\n"
+    )
+
+
+def _setup_launchd_tray() -> None:
+    """Install a launchd agent that runs the .app bundle's executable at login,
+    so the tray icon is always present after sign-in. KeepAlive is False — if
+    the user quits the tray from its menu, it stays quit until next login."""
+    plist_dir = Path.home() / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True, exist_ok=True)
+    plist = plist_dir / f"{_MACOS_TRAY_LABEL}.plist"
+    exe = str(_macos_tray_exec())
+    plist.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "  <dict>\n"
+        f"    <key>Label</key><string>{_MACOS_TRAY_LABEL}</string>\n"
+        "    <key>ProgramArguments</key>\n"
+        f"    <array>\n        <string>{exe}</string>\n    </array>\n"
+        "    <key>RunAtLoad</key><true/>\n"
+        "    <key>KeepAlive</key><false/>\n"
+        "  </dict>\n"
+        "</plist>\n"
+    )
+    subprocess.run(["launchctl", "unload", str(plist)], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["launchctl", "load", "-w", str(plist)], check=False)
 
 
 def _setup_launchd_agent(model: str | None) -> None:
@@ -332,9 +428,10 @@ def _init_windows(model: str, with_server: bool, assume_yes: bool = False) -> in
         _say(TODO, "pynput missing — reinstall with the windows extra: uv tool install '.[windows]'")
         todo.append("uv tool install '.[windows]'")
 
+    exe = shutil.which("whisper-dictate") or "whisper-dictate"
+
     if with_server:
         # Register a per-user logon scheduled task so the model autoloads at sign-in.
-        exe = shutil.which("whisper-dictate") or "whisper-dictate"
         serve_cmd = f"{exe} serve" + (f" --model {model}" if model else "")
         cmd = (
             f'schtasks /Create /TN "whisper-dictate-server" /SC ONLOGON /F '
@@ -348,7 +445,52 @@ def _init_windows(model: str, with_server: bool, assume_yes: bool = False) -> in
             _say(WARN, "could not register the logon task; start the daemon manually: whisper-dictate serve")
             todo.append("run `whisper-dictate serve` at logon (Task Scheduler)")
 
+    # Start Menu launcher + tray autostart so the user gets a clickable entry
+    # in the Start Menu and the mic icon appears at every sign-in.
+    if _install_windows_start_menu_shortcut(exe):
+        _say(FIX, "Start Menu shortcut installed (search “whisper-dictate”)")
+    else:
+        _say(WARN, "could not create the Start Menu shortcut (PowerShell unavailable?)")
+    rc = subprocess.run(
+        f'schtasks /Create /TN "whisper-dictate-tray" /SC ONLOGON /F /TR "{exe} tray"',
+        shell=True,
+    ).returncode
+    if rc == 0:
+        _say(FIX, "tray logon task registered (mic icon at sign-in)")
+        _say(TODO, 'start it now without re-logging in: schtasks /Run /TN "whisper-dictate-tray"')
+    else:
+        _say(WARN, "could not register the tray logon task")
+        todo.append("run `whisper-dictate tray` at logon (Task Scheduler)")
+
     return _finish(todo, assume_yes)
+
+
+def _windows_start_menu_path() -> Path:
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "whisper-dictate.lnk"
+
+
+def _install_windows_start_menu_shortcut(exe: str) -> bool:
+    """Create a Start Menu .lnk pointing at ``whisper-dictate tray``. Uses the
+    WScript.Shell COM object via PowerShell so we don't need to add a Python
+    dependency just for shortcut creation. Returns True on success."""
+    lnk = _windows_start_menu_path()
+    lnk.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        "$s = (New-Object -ComObject WScript.Shell)"
+        f".CreateShortcut('{lnk}');"
+        f"$s.TargetPath = '{exe}';"
+        "$s.Arguments = 'tray';"
+        f"$s.WorkingDirectory = '{Path.home()}';"
+        "$s.IconLocation = 'shell32.dll,138';"
+        "$s.Description = 'whisper-dictate tray (start/stop dictation)';"
+        "$s.Save()"
+    )
+    rc = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode
+    return rc == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -383,32 +525,52 @@ def _deinit_linux() -> None:
             _say(FIX, f"removed and stopped {svc}")
         else:
             _say(OK, f"{svc} was not installed")
-    launcher = Path.home() / ".local" / "share" / "applications" / "whisper-dictate.desktop"
-    if launcher.exists():
-        launcher.unlink(missing_ok=True)
-        _say(FIX, "removed the desktop launcher")
+    for label, path in (
+        ("desktop launcher",
+         Path.home() / ".local" / "share" / "applications" / "whisper-dictate.desktop"),
+        ("tray autostart entry",
+         Path.home() / ".config" / "autostart" / "whisper-dictate.desktop"),
+    ):
+        if path.exists():
+            path.unlink(missing_ok=True)
+            _say(FIX, f"removed the {label}")
 
 
 def _deinit_macos() -> None:
-    plist = Path.home() / "Library" / "LaunchAgents" / "ai.whisperdictate.server.plist"
-    if plist.exists():
-        subprocess.run(["launchctl", "unload", str(plist)], check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        plist.unlink(missing_ok=True)
-        _say(FIX, "removed and unloaded the warm-model launchd agent")
-    else:
-        _say(OK, "warm-model launchd agent was not installed")
+    for label, plist_name in (
+        ("warm-model launchd agent", f"{_MACOS_SERVER_LABEL}.plist"),
+        ("tray launchd agent", f"{_MACOS_TRAY_LABEL}.plist"),
+    ):
+        plist = Path.home() / "Library" / "LaunchAgents" / plist_name
+        if plist.exists():
+            subprocess.run(["launchctl", "unload", str(plist)], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            plist.unlink(missing_ok=True)
+            _say(FIX, f"removed and unloaded the {label}")
+        else:
+            _say(OK, f"{label} was not installed")
+    if _MACOS_APP_DIR.exists():
+        shutil.rmtree(_MACOS_APP_DIR, ignore_errors=True)
+        _say(FIX, "removed Whisper Dictate.app from ~/Applications")
 
 
 def _deinit_windows() -> None:
-    rc = subprocess.run(
-        'schtasks /Delete /TN "whisper-dictate-server" /F',
-        shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode
-    if rc == 0:
-        _say(FIX, "removed the warm-model logon task")
-    else:
-        _say(OK, "warm-model logon task was not present")
+    for label, task in (
+        ("warm-model logon task", "whisper-dictate-server"),
+        ("tray logon task", "whisper-dictate-tray"),
+    ):
+        rc = subprocess.run(
+            f'schtasks /Delete /TN "{task}" /F',
+            shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode
+        if rc == 0:
+            _say(FIX, f"removed the {label}")
+        else:
+            _say(OK, f"{label} was not present")
+    lnk = _windows_start_menu_path()
+    if lnk.exists():
+        lnk.unlink(missing_ok=True)
+        _say(FIX, "removed the Start Menu shortcut")
 
 
 def _clean_state() -> None:

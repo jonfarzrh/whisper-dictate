@@ -6,7 +6,7 @@ Local Whisper-powered dictation that types into any application. Cross-platform 
 
 Every platform needs [uv](https://docs.astral.sh/uv/) and Python ≥ 3.11. For NVIDIA GPU acceleration, see [GPU acceleration](#gpu-acceleration).
 
-**The painless path:** install the tool, then run `whisper-dictate init`. It checks every prerequisite for your OS, sets up the background services it can without root (the ydotool daemon and the warm-model autoloader), and prints the exact commands for anything that needs `sudo` (or runs them with `--yes`). Re-run it any time — it's idempotent. The per-platform sections below cover the one-time system packages `init` can't install for you.
+**The painless path:** install the tool, then run `whisper-dictate init`. It checks every prerequisite for your OS, sets up the background services it can without root (the ydotool daemon and the warm-model autoloader), drops a clickable app-menu launcher and a tray autostart hook so the mic icon is there at every login, and prints the exact commands for anything that needs `sudo` (or runs them with `--yes`). Re-run it any time — it's idempotent. The per-platform sections below cover the one-time system packages `init` can't install for you.
 
 ### Linux — Wayland (Pop!_OS COSMIC, GNOME 4x, KDE Plasma 6)
 
@@ -19,7 +19,7 @@ Every platform needs [uv](https://docs.astral.sh/uv/) and Python ≥ 3.11. For N
 
        uv tool install whisper-dictate
 
-3. **Run init** — on a fresh install it first opens the settings window so you can pick your model (close it to accept the defaults), then installs the `ydotoold` and warm-model systemd user services, checks `/dev/uinput` access, and verifies everything:
+3. **Run init** — on a fresh install it first opens the settings window so you can pick your model (close it to accept the defaults), then installs the `ydotoold` and warm-model systemd user services, drops an app-menu launcher and a tray autostart entry so the mic icon is back at every login, checks `/dev/uinput` access, and verifies everything:
 
        whisper-dictate init       # expect it to finish with "All set ✓"
 
@@ -42,7 +42,7 @@ Then bind `whisper-dictate` to a hotkey in your DE/WM.
 PortAudio ships *inside* the `sounddevice` wheel, so there's no Homebrew step.
 
     uv tool install 'whisper-dictate[macos]'   # the [macos] extra pulls in pynput for typing
-    whisper-dictate init                       # installs a launchd agent for the warm-model daemon, verifies setup
+    whisper-dictate init                       # installs warm-model + tray launchd agents, drops Whisper Dictate.app in ~/Applications, verifies setup
 
 On first use, grant **Accessibility** permission to whatever launches the CLI (Terminal, iTerm, Raycast…) under **System Settings → Privacy & Security → Accessibility** (`init` reminds you). Transcription runs on CPU — start with `--model small` if `large-v3` feels slow. Status notifications use the built-in `osascript`, so nothing extra to install.
 
@@ -53,7 +53,7 @@ Bind a hotkey with Raycast, Hammerspoon, or Shortcuts.app.
 PortAudio ships inside the `sounddevice` wheel.
 
     uv tool install 'whisper-dictate[windows]' # the [windows] extra pulls in pynput for typing
-    whisper-dictate init                        # registers a logon task for the warm-model daemon, verifies setup
+    whisper-dictate init                        # registers warm-model + tray logon tasks, drops a Start Menu shortcut, verifies setup
 
 For an NVIDIA GPU, add the `--with` flags from [GPU acceleration](#gpu-acceleration). Bind a hotkey with PowerToys, AutoHotkey, or a `.lnk` shortcut. Status notifications use a built-in PowerShell toast, so nothing extra to install. (The warm-model daemon needs Unix-domain sockets — available on Windows 10 1803+; otherwise transcription falls back to loading the model per call.)
 
@@ -85,7 +85,7 @@ The graphical interface (PySide6/Qt) is included by default — no extra needed:
 
 **Settings window** — choose your model, spoken language, translation target and tone with no flags to remember. Translation and tone are **independent**: tick *Apply tone* without *Translate to* and your speech is just rewritten (e.g. made professional) in the same language. Choices are saved to a config file (`~/.config/whisper-dictate/config.json`, or the platform equivalent) that **every** dictation reads, so a bare hotkey press does the right thing; a command-line flag still overrides for that run. A **Check Ollama** button confirms translation/tone will work, and if the chosen model isn't downloaded, saving offers to pull it with a progress bar.
 
-**Tray app** — `whisper-dictate tray` runs a microphone icon in your system tray (menu bar): left-click to start/stop dictation, right-click for Settings and Quit, and the icon turns red while recording. `whisper-dictate init` installs a desktop launcher, so you can also just start **whisper-dictate** from your applications menu.
+**Tray app** — `whisper-dictate tray` runs a microphone icon in your system tray (menu bar): left-click to start/stop dictation, right-click for Settings and Quit, and the icon turns red while recording. `whisper-dictate init` installs both an **app-menu launcher** and a **tray autostart entry** on every supported OS — on Linux a `.desktop` + autostart pair, on macOS a `Whisper Dictate.app` bundle + launchd agent, on Windows a Start Menu `.lnk` + ONLOGON scheduled task — so the icon is there every time you log in, and you can also start the app by clicking it in your apps menu. Quit from the tray menu sticks until next login.
 
 When a `serve` daemon is running, the toggle automatically routes through it for near-instant (~0.3s) transcription; otherwise it loads the model in-process each time (~3s). Models are cached in `~/.cache/huggingface/` after first download.
 
