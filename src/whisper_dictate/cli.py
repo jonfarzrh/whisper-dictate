@@ -175,6 +175,16 @@ def cmd_check(args: argparse.Namespace) -> int:
     print(f"Backend: {backend.name}")
     print(f"Status:  {'OK' if ok else 'NOT OK'}")
     print(msg)
+
+    from whisper_dictate.transcriber import detect_acceleration
+    accel = detect_acceleration()
+    print("\nTranscription acceleration")
+    print(f"  device:        {accel['device']}")
+    print(f"  compute_type:  {accel['compute_type']}")
+    if accel["reason"]:
+        print(f"  {accel['reason']}")
+    for hint in accel["hints"]:
+        print(f"  hint: {hint}")
     return 0 if ok else 1
 
 
