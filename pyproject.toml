@@ -15,9 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-macos = ["pynput>=1.7"]
+macos = ["pynput>=1.7","mlx-whisper>=0.4"]
 windows = ["pynput>=1.7"]
-apple = ["mlx-whisper>=0.4"]
 
 [project.scripts]
 whisper-dictate = "whisper_dictate.cli:main"
