@@ -30,6 +30,7 @@ def transcribe_via_server(
     compute_type: str,
     language: str | None,
     vad: bool,
+    engine: str,
     timeout: float = 300.0,
 ) -> str | None:
     """Transcribe via the warm daemon. Returns the text (possibly "") on success,
@@ -49,6 +50,7 @@ def transcribe_via_server(
         "compute_type": compute_type,
         "language": language,
         "vad": vad,
+        "engine": engine,
     }).encode() + b"\n"
 
     try:
@@ -76,15 +78,17 @@ def run_server(
     model_name: str | None = None,
     device: str = "auto",
     compute_type: str = "auto",
+    engine_name: str | None = None,
 ) -> None:
     """Daemon body: preload the model, then serve transcription requests until
     killed. The model isn't pinned at launch — each request carries the model the
     client read from saved settings, so changing the model in the settings window
     takes effect on the very next press with no need to restart the daemon. Only
-    one model is kept resident: a request for a different model evicts the previous
-    one (freeing its VRAM) and loads the new one. When ``model_name`` is None the
-    warm-up model is read from the saved config so the daemon and the GUI share a
-    single source of truth.
+    one model is kept resident: a request for a different (engine, model, device,
+    compute_type) combination evicts the previous one (freeing its VRAM) and
+    loads the new one. When ``model_name`` / ``engine_name`` are None they're
+    read from the saved config so the daemon and the GUI share a single source
+    of truth.
 
     A background thread watches the config file and pre-loads the new model as
     soon as the settings window saves a change, so even the *first* press after
@@ -92,7 +96,11 @@ def run_server(
     import threading
     import time
 
-    from whisper_dictate.transcriber import load_model, transcribe_with
+    from whisper_dictate.transcriber import (
+        load_model_for_engine,
+        resolve_engine,
+        transcribe_with_engine,
+    )
 
     if not hasattr(socket, "AF_UNIX"):
         raise RuntimeError(
@@ -101,34 +109,41 @@ def run_server(
             "it — transcription just loads the model per call."
         )
 
-    if not model_name:
+    if not model_name or not engine_name:
         from whisper_dictate.config import load_config
-        model_name = str(load_config()["model"])
+        cfg = load_config()
+        if not model_name:
+            model_name = str(cfg["model"])
+        if not engine_name:
+            engine_name = str(cfg.get("engine", "auto"))
 
     # Keep exactly one model resident. The model is a global setting (translation
     # and tone are the per-hotkey knobs, not the model), so caching more than one
     # only ever pins stale VRAM after the user switches models in settings. The
     # lock guards the cache against the config-watcher thread racing the serve loop.
-    cache: dict[tuple[str, str, str], object] = {}
+    # Key is (engine, model, device, compute_type) so switching ENGINE also evicts.
+    cache: dict[tuple[str, str, str, str], object] = {}
     cache_lock = threading.Lock()
 
-    def get_model(m: str, d: str, c: str):
-        key = (m, d, c)
+    def get_model(e: str, m: str, d: str, c: str):
+        key = (e, m, d, c)
         with cache_lock:
             if key not in cache:
                 if cache:  # a different model was resident — drop it and free its VRAM
                     cache.clear()
                     import gc
                     gc.collect()
-                print(f"whisper-dictate server: loading {m} ({d})...", file=sys.stderr, flush=True)
-                cache[key] = load_model(m, d, c)
+                print(f"whisper-dictate server: loading {m} ({e}/{d})...",
+                      file=sys.stderr, flush=True)
+                cache[key] = load_model_for_engine(e, m, d, c)
             return cache[key]
 
     sp = socket_path()
     sp.unlink(missing_ok=True)
 
     # Warm the default model up front so the first real request is fast too.
-    get_model(model_name, device, compute_type)
+    startup_engine = resolve_engine(engine_name)
+    get_model(startup_engine, model_name, device, compute_type)
     print(f"whisper-dictate server: ready, listening on {sp}", file=sys.stderr, flush=True)
 
     def watch_config() -> None:
@@ -147,10 +162,15 @@ def run_server(
                     continue
                 last_mtime = mtime
                 cfg = load_config()
-                key = (str(cfg["model"]), str(cfg["device"]), str(cfg["compute_type"]))
+                key = (
+                    resolve_engine(str(cfg.get("engine", "auto"))),
+                    str(cfg["model"]),
+                    str(cfg["device"]),
+                    str(cfg["compute_type"]),
+                )
                 if key not in cache:
                     print("whisper-dictate server: settings changed, pre-warming "
-                          f"{key[0]}...", file=sys.stderr, flush=True)
+                          f"{key[1]} ({key[0]})...", file=sys.stderr, flush=True)
                     get_model(*key)
             except Exception:  # noqa: BLE001 - the watcher must not crash the daemon
                 pass
@@ -174,12 +194,17 @@ def run_server(
                     continue
                 try:
                     req = json.loads(buf.split(b"\n", 1)[0].decode())
+                    # Old clients that predate the engine field still work:
+                    # they get the daemon's startup default.
+                    req_engine = resolve_engine(req.get("engine") or engine_name)
                     model = get_model(
+                        req_engine,
                         req.get("model") or model_name,
                         req.get("device") or device,
                         req.get("compute_type") or compute_type,
                     )
-                    text = transcribe_with(
+                    text = transcribe_with_engine(
+                        req_engine,
                         model,
                         Path(req["path"]),
                         language=req.get("language", "en"),

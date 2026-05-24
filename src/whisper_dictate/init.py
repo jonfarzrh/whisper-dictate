@@ -676,7 +676,8 @@ def _finish(todo: list[str], assume_yes: bool = False) -> int:
     try:
         from whisper_dictate.transcriber import detect_acceleration
         accel = detect_acceleration()
-        print(f"  transcription: device={accel['device']} ({accel['compute_type']})")
+        print(f"  transcription: engine={accel['engine']} "
+              f"device={accel['device']} ({accel['compute_type']})")
         if accel["hints"]:
             print(f"    hint: {accel['hints'][0]}")
     except Exception as e:  # noqa: BLE001

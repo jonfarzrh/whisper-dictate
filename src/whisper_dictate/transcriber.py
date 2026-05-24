@@ -1,4 +1,16 @@
-"""Transcription via faster-whisper. Lazy-loads the model."""
+"""Transcription via faster-whisper or MLX-Whisper. Lazy-loads the model.
+
+The engine layer (``resolve_engine`` + ``load_model_for_engine`` +
+``transcribe_with_engine``) is a thin abstraction over two backends:
+
+- ``faster_whisper`` — the cross-platform default; CPU and CUDA, via CTranslate2.
+- ``mlx`` — Apple Silicon only, runs Whisper on the Metal GPU via mlx-whisper.
+
+Only the model loader and inference call vary, so this lives in-module rather
+than a subpackage. Heavy imports (``faster_whisper``, ``mlx_whisper``) stay
+lazy: they happen inside the function that needs them, never at module top
+level, so importing this module is cheap on any platform.
+"""
 from __future__ import annotations
 
 import os
@@ -98,6 +110,110 @@ def transcribe_with(model, audio_path: Path, language: str | None = "en", vad: b
     return "".join(seg.text for seg in segments).strip()
 
 
+def _is_mlx_available() -> bool:
+    """True only on Apple Silicon (darwin arm64) when ``mlx_whisper`` is
+    importable. Uses ``importlib.util.find_spec`` so ``mlx_whisper`` is NOT
+    actually imported — calling this is cheap and safe on Linux/Windows."""
+    try:
+        if sys.platform != "darwin":
+            return False
+        import platform
+        if platform.machine() != "arm64":
+            return False
+        import importlib.util
+        return importlib.util.find_spec("mlx_whisper") is not None
+    except Exception:  # noqa: BLE001 - probing must never raise
+        return False
+
+
+def _mlx_repo(model_name: str) -> str:
+    """Map a short Whisper model name to the corresponding mlx-community HF
+    repo. If ``model_name`` already contains a ``/`` it's treated as a full
+    repo path and returned unchanged, so a user who's mirrored or quantized a
+    model can plug it straight into settings."""
+    if "/" in model_name:
+        return model_name
+    return f"mlx-community/whisper-{model_name}-mlx"
+
+
+class _MlxModelHandle:
+    """Lightweight cache slot for the MLX engine.
+
+    Participates in the daemon's one-model cache so engine-or-model switches
+    trigger the same eviction logic as faster-whisper. Carries only the
+    resolved HF repo; the actual MLX model isn't held here — mlx-whisper
+    manages its own model lifecycle keyed on ``path_or_hf_repo``. NOT a
+    dataclass: plain class with ``__slots__`` to keep the footprint minimal."""
+
+    __slots__ = ("repo",)
+
+    def __init__(self, repo: str) -> None:
+        self.repo = repo
+
+
+def resolve_engine(engine: str) -> str:
+    """Resolve ``"auto"`` to a concrete engine name.
+
+    ``"auto"`` -> ``"mlx"`` on Apple Silicon when mlx-whisper is installed,
+    ``"faster_whisper"`` everywhere else. Explicit ``"mlx"`` /
+    ``"faster_whisper"`` is returned unchanged so the user can force a
+    specific backend regardless of detection."""
+    if engine == "auto":
+        return "mlx" if _is_mlx_available() else "faster_whisper"
+    return engine
+
+
+def load_model_for_engine(
+    engine: str,
+    model_name: str = "large-v3",
+    device: str = "auto",
+    compute_type: str = "auto",
+) -> object:
+    """Build a model handle for the chosen engine.
+
+    For ``faster_whisper`` this delegates to ``load_model`` (the existing
+    CTranslate2 path, unchanged). For ``mlx`` this returns a lightweight
+    ``_MlxModelHandle`` carrying the resolved HF repo — no ``mlx_whisper``
+    import happens here. ``device`` / ``compute_type`` are ignored on the
+    MLX branch because MLX manages its own Metal-side execution."""
+    if engine == "mlx":
+        return _MlxModelHandle(repo=_mlx_repo(model_name))
+    return load_model(model_name, device, compute_type)
+
+
+def transcribe_with_engine(
+    engine: str,
+    model: object,
+    audio_path: Path,
+    language: str | None = "en",
+    vad: bool = False,
+) -> str:
+    """Run inference with an already-loaded model under the chosen engine.
+
+    For ``faster_whisper`` this delegates to ``transcribe_with`` (unchanged).
+    For ``mlx`` this lazily imports ``mlx_whisper`` and calls
+    ``mlx_whisper.transcribe``. VAD isn't a feature of mlx-whisper, so when
+    requested under MLX we emit a one-line stderr warning and proceed without
+    it — the alternative (raising) would silently lose the user's words."""
+    if engine == "mlx":
+        if vad:
+            print(
+                "whisper-dictate: VAD not supported under MLX engine; ignoring.",
+                file=sys.stderr,
+                flush=True,
+            )
+        import mlx_whisper  # type: ignore[import-not-found]
+
+        assert isinstance(model, _MlxModelHandle)
+        result = mlx_whisper.transcribe(
+            str(audio_path),
+            path_or_hf_repo=model.repo,
+            language=language,
+        )
+        return str(result["text"]).strip()
+    return transcribe_with(model, audio_path, language=language, vad=vad)
+
+
 def transcribe(
     audio_path: Path,
     model_name: str = "large-v3",
@@ -105,11 +221,14 @@ def transcribe(
     compute_type: str = "auto",
     language: str | None = "en",
     vad: bool = False,
+    *,
+    engine: str = "auto",
 ) -> str:
     """One-shot: load a model and transcribe. Pays the model-load cost each call;
     use the warm-model daemon (server.py) to avoid that on every invocation."""
-    model = load_model(model_name, device, compute_type)
-    return transcribe_with(model, audio_path, language=language, vad=vad)
+    engine = resolve_engine(engine)
+    model = load_model_for_engine(engine, model_name, device, compute_type)
+    return transcribe_with_engine(engine, model, audio_path, language=language, vad=vad)
 
 
 def _detect_device() -> str:
@@ -127,23 +246,36 @@ def _detect_device() -> str:
 
 
 def detect_acceleration() -> dict:
-    """Diagnose what device/compute_type ``load_model`` will pick on this system,
-    why, and what (if anything) the user could install to do better. Used by the
-    ``check`` CLI and ``init`` to surface GPU status to the user instead of
-    silently falling back to CPU."""
+    """Diagnose what engine/device/compute_type ``load_model`` will pick on
+    this system, why, and what (if anything) the user could install to do
+    better. Used by the ``check`` CLI and ``init`` to surface GPU status to
+    the user instead of silently falling back to CPU."""
     device = _detect_device()
     compute_type = "float16" if device == "cuda" else "int8"
     wheels = [d.split(os.sep)[-1] for d in _nvidia_wheel_dirs()]
 
     hints: list[str] = []
+    engine = "faster_whisper"
     if device == "cuda":
         if wheels:
             reason = f"CUDA runtime found via pip nvidia wheels ({', '.join(wheels)})."
         else:
             reason = "CUDA runtime found on system (libcudart present on the loader path)."
     elif sys.platform == "darwin":
-        reason = ("macOS: no CUDA on Apple platforms, and faster-whisper / CTranslate2 "
-                  "has no Metal backend — CPU is the only supported device here.")
+        if _is_mlx_available():
+            engine = "mlx"
+            reason = ("Apple Silicon detected and mlx-whisper is installed — "
+                      "MLX (Metal GPU) will be used for transcription.")
+        else:
+            import platform as _platform
+            if _platform.machine() == "arm64":
+                reason = ("Apple Silicon detected but mlx-whisper is not installed. "
+                          "Install it for GPU acceleration.")
+                hints.append("Install MLX support: `uv add mlx-whisper` "
+                             "(or `uv tool install 'whisper-dictate[apple]'`)")
+            else:
+                reason = ("Intel Mac: faster-whisper on CPU. "
+                          "No Metal or CUDA backend is available on Intel macOS.")
     elif sys.platform == "win32":
         reason = ("No CUDA runtime found (no cudart64_*.dll on the loader path, "
                   "no nvidia pip wheels installed).")
@@ -161,6 +293,7 @@ def detect_acceleration() -> dict:
         reason = f"Unknown platform '{sys.platform}'; defaulting to CPU."
 
     return {
+        "engine": engine,
         "device": device,
         "compute_type": compute_type,
         "platform": sys.platform,

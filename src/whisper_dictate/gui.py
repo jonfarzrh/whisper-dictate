@@ -42,10 +42,11 @@ def _ensure_tcl_env() -> None:
                     os.environ["TK_LIBRARY"] = tk[-1]
                 return
 
-# Friendly label <-> stored-value mappings for the two fields where the stored
+# Friendly label <-> stored-value mappings for the fields where the stored
 # value isn't what we want to show the user. Everything else is shown verbatim.
 _LANG_NONE = "auto-detect"     # stored as ""
 _OPT_NONE = "(none)"           # stored as "" for translate_to / style
+_MIC_DEFAULT = "System default"  # stored as "" for input_device
 
 # A starter list of spoken/target languages. Both comboboxes stay editable, so a
 # user can type any Whisper code or language name we didn't list.
@@ -97,6 +98,27 @@ def run_settings() -> int:
     ttk.Label(frm, text="Transcription", font=("", 10, "bold")).grid(
         row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
     row += 1
+
+    # Microphone picker — first entry is the system-default sentinel ("" in
+    # config). Device names come from sounddevice; if PortAudio isn't installed
+    # or no input device is present, only "System default" is offered.
+    mic_names: list[str] = []
+    try:
+        import sounddevice as sd
+        mic_names = [d["name"] for d in sd.query_devices()
+                     if d.get("max_input_channels", 0) > 0]
+    except Exception:  # noqa: BLE001 - no PortAudio / no mic -> show default only
+        pass
+    saved_mic = str(cfg.get("input_device", ""))
+    mic_var = tk.StringVar(value=(_MIC_DEFAULT if saved_mic == "" else saved_mic))
+    add_row("Microphone", ttk.Combobox(
+        frm, textvariable=mic_var, state="readonly",
+        values=[_MIC_DEFAULT, *mic_names]))
+
+    engine_var = tk.StringVar(value=str(cfg.get("engine", "auto")))
+    add_row("Engine", ttk.Combobox(
+        frm, textvariable=engine_var, state="readonly",
+        values=["auto", "faster_whisper", "mlx"]))
 
     model_var = tk.StringVar(value=str(cfg["model"]))
     add_row("Whisper model", ttk.Combobox(
@@ -221,7 +243,10 @@ def run_settings() -> int:
         style = "" if style in ("", _OPT_NONE) else style
         model = ollama_model_var.get().strip() or config.DEFAULTS["ollama_model"]
         host = ollama_host_var.get().strip() or None
+        mic = mic_var.get().strip()
         config.save_config({
+            "input_device": "" if mic in ("", _MIC_DEFAULT) else mic,
+            "engine": engine_var.get().strip() or "auto",
             "model": model_var.get().strip() or "large-v3",
             "device": device_var.get().strip() or "auto",
             "compute_type": compute_var.get().strip() or "auto",

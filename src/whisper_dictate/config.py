@@ -24,11 +24,14 @@ from whisper_dictate.polish import DEFAULT_MODEL as DEFAULT_OLLAMA_MODEL
 # means "unset / use built-in default" for the optional fields (translate_to,
 # style, ollama_host) and "auto-detect" for `language`.
 DEFAULTS: dict[str, object] = {
+    "engine": "auto",
     "model": "large-v3",
     "device": "auto",
     "compute_type": "auto",
     "language": "en",        # "" -> auto-detect
     "vad": False,
+    "input_device": "",      # "" -> system default mic; otherwise sounddevice device name
+
     "translate_to": "",      # "" -> no translation
     "style": "",             # "" -> no restyle
     "ollama_model": DEFAULT_OLLAMA_MODEL,

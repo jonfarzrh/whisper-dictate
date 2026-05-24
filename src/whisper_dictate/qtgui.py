@@ -285,29 +285,66 @@ def _build_settings_window():
     # --- Transcription card ---
     g = make_card("Transcription")
 
+    # Microphone picker. "System default" maps to "" so PortAudio picks whatever
+    # the OS is currently using. Stored values are device *names* (not indices)
+    # so they survive USB reconnects that shuffle PortAudio's numbering.
+    mic_cb = QtWidgets.QComboBox()
+    mic_cb.addItem("System default", "")
+    try:
+        import sounddevice as sd
+        for d in sd.query_devices():
+            if d.get("max_input_channels", 0) > 0:
+                mic_cb.addItem(d["name"], d["name"])
+    except Exception:  # noqa: BLE001 - no mic / no PortAudio -> just the default entry
+        pass
+    saved_mic = str(cfg.get("input_device", ""))
+    mic_idx = mic_cb.findData(saved_mic)
+    mic_cb.setCurrentIndex(mic_idx if mic_idx >= 0 else 0)
+    field(g, 0, "Microphone", mic_cb)
+
+    engine_cb = QtWidgets.QComboBox()
+    engine_cb.addItems(["auto", "faster_whisper", "mlx"])
+    engine_cb.setCurrentText(str(cfg.get("engine", "auto")))
+    field(g, 1, "Engine", engine_cb)
+
+    # Surface MLX availability so Apple-Silicon users know what "auto" will do.
+    # The hint is only shown when MLX is actually importable on this machine —
+    # on Linux/Windows it just stays empty.
+    from whisper_dictate.transcriber import _is_mlx_available
+    if _is_mlx_available():
+        mlx_hint = QtWidgets.QLabel(
+            "MLX (Apple Silicon GPU) detected — 'auto' will use it."
+        )
+        mlx_hint.setObjectName("hint")
+        mlx_hint.setWordWrap(True)
+        g.addWidget(mlx_hint, 2, 1)
+        _row = 3
+    else:
+        _row = 2
+
     model_cb = QtWidgets.QComboBox(); model_cb.setEditable(True)
     model_cb.addItems(["tiny", "base", "small", "medium", "large-v3"])
     model_cb.setCurrentText(str(cfg["model"]))
-    field(g, 0, "Whisper model", model_cb)
+    field(g, _row, "Whisper model", model_cb)
 
     device_cb = QtWidgets.QComboBox()
     device_cb.addItems(["auto", "cuda", "cpu"])
     device_cb.setCurrentText(str(cfg["device"]))
-    field(g, 1, "Device", device_cb)
+    field(g, _row + 1, "Device", device_cb)
 
     compute_cb = QtWidgets.QComboBox(); compute_cb.setEditable(True)
     compute_cb.addItems(["auto", "float16", "int8", "int8_float16"])
     compute_cb.setCurrentText(str(cfg["compute_type"]))
-    field(g, 2, "Compute type", compute_cb)
+    field(g, _row + 2, "Compute type", compute_cb)
 
     lang_cb = QtWidgets.QComboBox(); lang_cb.setEditable(True)
     lang_cb.addItems(_SPOKEN_LANGS)
     lang_cb.setCurrentText(_LANG_AUTO if cfg["language"] == "" else str(cfg["language"]))
-    field(g, 3, "Spoken language", lang_cb)
+    field(g, _row + 3, "Spoken language", lang_cb)
 
     vad_chk = QtWidgets.QCheckBox("Drop silence (voice-activity filter)")
     vad_chk.setChecked(bool(cfg["vad"]))
-    g.addWidget(vad_chk, 4, 1)
+    g.addWidget(vad_chk, _row + 4, 1)
 
     # --- Translate & tone card ---
     g2 = make_card("Translate & tone")
@@ -381,6 +418,8 @@ def _build_settings_window():
     def collect() -> dict:
         lang = lang_cb.currentText().strip()
         return {
+            "input_device": mic_cb.currentData() or "",
+            "engine": engine_cb.currentText().strip() or "auto",
             "model": model_cb.currentText().strip() or "large-v3",
             "device": device_cb.currentText().strip() or "auto",
             "compute_type": compute_cb.currentText().strip() or "auto",
