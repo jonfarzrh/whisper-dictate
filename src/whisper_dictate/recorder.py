@@ -144,6 +144,8 @@ def run_record_worker(out_path: Path) -> None:
     import sounddevice as sd
     import soundfile as sf
 
+    from whisper_dictate import config
+
     chunks: list[np.ndarray] = []
     stop_flag = {"stop": False}
 
@@ -157,12 +159,18 @@ def run_record_worker(out_path: Path) -> None:
     def callback(indata, frames, time_info, status):
         chunks.append(indata.copy())
 
+    # Honor the saved input-device choice. Empty = let PortAudio pick the system
+    # default. sounddevice accepts a device name (substring match) or an int
+    # index; we store the name because indices renumber across USB reconnects.
+    device = (config.load_config().get("input_device") or "").strip() or None
+
     sp = stop_file()
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
         dtype="float32",
         callback=callback,
+        device=device,
     ):
         while not stop_flag["stop"] and not sp.exists():
             sd.sleep(50)

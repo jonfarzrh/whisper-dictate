@@ -56,7 +56,7 @@ def _transcribe(args: argparse.Namespace, wav: Path) -> str:
 
     language = _effective_language(args)
     text = transcribe_via_server(
-        wav, args.model, args.device, args.compute_type, language, args.vad
+        wav, args.model, args.device, args.compute_type, language, args.vad, args.engine
     )
     if text is not None:
         return text
@@ -69,6 +69,7 @@ def _transcribe(args: argparse.Namespace, wav: Path) -> str:
         compute_type=args.compute_type,
         language=language,
         vad=args.vad,
+        engine=args.engine,
     )
 
 
@@ -179,6 +180,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     from whisper_dictate.transcriber import detect_acceleration
     accel = detect_acceleration()
     print("\nTranscription acceleration")
+    print(f"  engine:        {accel['engine']}")
     print(f"  device:        {accel['device']}")
     print(f"  compute_type:  {accel['compute_type']}")
     if accel["reason"]:
@@ -202,6 +204,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         model_name=args.model,
         device=args.device,
         compute_type=args.compute_type,
+        engine_name=args.engine,
     )
     return 0
 
@@ -268,11 +271,16 @@ def build_parser() -> argparse.ArgumentParser:
     cfg = load_config()
 
     def add_model_opts(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--engine", default=cfg["engine"],
+                        choices=["auto", "faster_whisper", "mlx"],
+                        help="Inference engine. 'auto' picks MLX on Apple Silicon "
+                             "(if mlx-whisper is installed), faster-whisper "
+                             "everywhere else. Default: auto")
         sp.add_argument("--model", default=cfg["model"],
                         help="Whisper model (tiny, base, small, medium, large-v3). Default: large-v3")
         sp.add_argument("--device", default=cfg["device"],
                         choices=["auto", "cuda", "cpu"],
-                        help="Inference device. Default: auto")
+                        help="Inference device (faster-whisper only; ignored under MLX). Default: auto")
         sp.add_argument("--compute-type", default=cfg["compute_type"],
                         help="float16, int8, int8_float16, etc. Default: auto")
         sp.add_argument("--language", default=cfg["language"],
