@@ -346,6 +346,25 @@ def _build_settings_window():
     vad_chk.setChecked(bool(cfg["vad"]))
     g.addWidget(vad_chk, _row + 4, 1)
 
+    # Linux-only: ydotool/xdotool inter-keystroke delay. Irrelevant on macOS
+    # (pynput) and Windows (pynput), so we hide the control there to keep the
+    # form uncluttered. The saved value is still preserved across edits.
+    key_delay_spin: "QtWidgets.QSpinBox | None" = None
+    if sys.platform.startswith("linux"):
+        key_delay_spin = QtWidgets.QSpinBox()
+        key_delay_spin.setRange(1, 200)
+        key_delay_spin.setSuffix(" ms")
+        try:
+            key_delay_spin.setValue(int(cfg.get("type_key_delay_ms", 12)))
+        except (TypeError, ValueError):
+            key_delay_spin.setValue(12)
+        key_delay_spin.setToolTip(
+            "Delay between synthesised keystrokes. Bump this if dictation drops "
+            "spaces or letters in slow consumers (JetBrains terminals, Electron "
+            "apps). Default 12 ms."
+        )
+        field(g, _row + 5, "Typing key delay", key_delay_spin)
+
     # --- Translate & tone card ---
     g2 = make_card("Translate & tone")
 
@@ -417,6 +436,10 @@ def _build_settings_window():
 
     def collect() -> dict:
         lang = lang_cb.currentText().strip()
+        # Preserve type_key_delay_ms when the control isn't shown (non-Linux), so
+        # editing settings on macOS/Windows doesn't clobber a value set on Linux.
+        key_delay = (key_delay_spin.value() if key_delay_spin is not None
+                     else cfg.get("type_key_delay_ms", config.DEFAULTS["type_key_delay_ms"]))
         return {
             "input_device": mic_cb.currentData() or "",
             "engine": engine_cb.currentText().strip() or "auto",
@@ -429,6 +452,7 @@ def _build_settings_window():
             "style": tone_cb.currentText().strip() if tone_chk.isChecked() else "",
             "ollama_model": model_edit.text().strip() or config.DEFAULTS["ollama_model"],
             "ollama_host": host_edit.text().strip(),
+            "type_key_delay_ms": key_delay,
         }
 
     def on_save():

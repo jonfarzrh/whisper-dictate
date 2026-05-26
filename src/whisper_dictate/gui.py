@@ -143,6 +143,19 @@ def run_settings() -> int:
     vad_var = tk.BooleanVar(value=bool(cfg["vad"]))
     add_row("Voice-activity filter", ttk.Checkbutton(frm, variable=vad_var))
 
+    # Linux-only: ydotool/xdotool inter-keystroke delay. On macOS/Windows the
+    # typing backend (pynput) has no equivalent knob, so the control is hidden
+    # there to keep the form uncluttered. The saved value is still preserved.
+    key_delay_var: "tk.StringVar | None" = None
+    if sys.platform.startswith("linux"):
+        try:
+            initial_delay = str(int(cfg.get("type_key_delay_ms", 12)))
+        except (TypeError, ValueError):
+            initial_delay = "12"
+        key_delay_var = tk.StringVar(value=initial_delay)
+        add_row("Typing key delay (ms)",
+                ttk.Spinbox(frm, from_=1, to=200, textvariable=key_delay_var, width=8))
+
     ttk.Separator(frm, orient="horizontal").grid(
         row=row, column=0, columnspan=2, sticky="ew", pady=10)
     row += 1
@@ -244,6 +257,15 @@ def run_settings() -> int:
         model = ollama_model_var.get().strip() or config.DEFAULTS["ollama_model"]
         host = ollama_host_var.get().strip() or None
         mic = mic_var.get().strip()
+        # Preserve type_key_delay_ms when the control isn't shown (non-Linux), so
+        # editing settings on macOS/Windows doesn't clobber a Linux-set value.
+        if key_delay_var is not None:
+            try:
+                key_delay = int(key_delay_var.get())
+            except (TypeError, ValueError):
+                key_delay = int(config.DEFAULTS["type_key_delay_ms"])  # type: ignore[arg-type]
+        else:
+            key_delay = cfg.get("type_key_delay_ms", config.DEFAULTS["type_key_delay_ms"])
         config.save_config({
             "input_device": "" if mic in ("", _MIC_DEFAULT) else mic,
             "engine": engine_var.get().strip() or "auto",
@@ -256,6 +278,7 @@ def run_settings() -> int:
             "style": style,
             "ollama_model": model,
             "ollama_host": ollama_host_var.get().strip(),
+            "type_key_delay_ms": key_delay,
         })
 
         # Translation/tone needs the Ollama model present. If it isn't, offer to

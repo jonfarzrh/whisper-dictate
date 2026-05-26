@@ -82,6 +82,17 @@ class LinuxBackend(TypingBackend):
             env["YDOTOOL_SOCKET"] = sock
         return env
 
+    def _key_delay_ms(self) -> int:
+        """Inter-keystroke delay (ms) from saved settings, clamped to a sane range.
+        Too small (<3ms) and slow consumers like JetBrains/Electron terminals drop
+        keys; too large and dictation feels sluggish."""
+        from whisper_dictate.config import DEFAULTS, load_config
+        try:
+            v = int(load_config().get("type_key_delay_ms", DEFAULTS["type_key_delay_ms"]))
+        except (TypeError, ValueError):
+            v = int(DEFAULTS["type_key_delay_ms"])  # type: ignore[arg-type]
+        return max(1, min(v, 1000))
+
     def type_text(self, text: str) -> None:
         tool = self._tool()
         if tool is None:
@@ -89,11 +100,12 @@ class LinuxBackend(TypingBackend):
                 "Neither ydotool nor xdotool found. "
                 "Install with: sudo apt install ydotool"
             )
+        delay = str(self._key_delay_ms())
         if tool == "ydotool":
             # ydotool can't synthesise non-ASCII characters; paste those instead.
             if text.isascii():
                 subprocess.run(
-                    ["ydotool", "type", "--key-delay", "3", "--", text],
+                    ["ydotool", "type", "--key-delay", delay, "--", text],
                     check=True, env=self._ydotool_env(),
                 )
             else:
@@ -101,7 +113,7 @@ class LinuxBackend(TypingBackend):
         else:
             # xdotool handles Unicode itself, so a plain type is fine on X11.
             subprocess.run(
-                ["xdotool", "type", "--delay", "3", "--", text],
+                ["xdotool", "type", "--delay", delay, "--", text],
                 check=True,
             )
 

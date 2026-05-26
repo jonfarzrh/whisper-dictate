@@ -36,6 +36,12 @@ DEFAULTS: dict[str, object] = {
     "style": "",             # "" -> no restyle
     "ollama_model": DEFAULT_OLLAMA_MODEL,
     "ollama_host": "",       # "" -> $OLLAMA_HOST or http://localhost:11434
+
+    # Linux-only: ms between synthesised keystrokes when typing the transcript.
+    # The default (3) was fast but dropped keys (notably spaces) into slow
+    # consumers like JetBrains/Electron terminals; 12 is imperceptible to humans
+    # and reliable across the apps people actually dictate into.
+    "type_key_delay_ms": 12,
 }
 
 
