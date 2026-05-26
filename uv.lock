@@ -1765,10 +1765,8 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-apple = [
-    { name = "mlx-whisper" },
-]
 macos = [
+    { name = "mlx-whisper" },
     { name = "pynput" },
 ]
 windows = [
@@ -1778,7 +1776,7 @@ windows = [
 [package.metadata]
 requires-dist = [
     { name = "faster-whisper", specifier = ">=1.0" },
-    { name = "mlx-whisper", marker = "extra == 'apple'", specifier = ">=0.4" },
+    { name = "mlx-whisper", marker = "extra == 'macos'", specifier = ">=0.4" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pynput", marker = "extra == 'macos'", specifier = ">=1.7" },
     { name = "pynput", marker = "extra == 'windows'", specifier = ">=1.7" },
@@ -1786,4 +1784,4 @@ requires-dist = [
     { name = "sounddevice", specifier = ">=0.4" },
     { name = "soundfile", specifier = ">=0.12" },
 ]
-provides-extras = ["macos", "windows", "apple"]
+provides-extras = ["macos", "windows"]
